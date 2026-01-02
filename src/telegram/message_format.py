@@ -145,3 +145,49 @@ def format_sell_message(signal: Dict, ticker_info: Optional[Dict] = None) -> str
     
     return msg
 
+
+def format_no_signal_message(
+    date_str: str,
+    reason: str,
+    smi_signal_count: int = 0,
+    top_signal: Optional[Dict] = None,
+    filter_stats: Optional[Dict] = None,
+) -> str:
+    """
+    시그널 없음 메시지 포맷팅
+    
+    Args:
+        date_str: 날짜 문자열 (YYYY-MM-DD)
+        reason: 시그널이 없는 사유
+        smi_signal_count: SMI로 잡힌 시그널 개수
+        top_signal: 거래대금 기준 TOP 1 시그널 정보
+        filter_stats: 필터별 통계
+    """
+    date = escape_html(date_str)
+    reason_text = escape_html(reason)
+    
+    msg = f"📭 <b>시그널 없음</b>\n\n"
+    msg += f"📅 <b>날짜:</b> {date}\n"
+    msg += f"📋 <b>사유:</b> {reason_text}\n\n"
+    
+    # 1. SMI 시그널로 잡힌 시그널 개수
+    msg += f"<b>1. SMI 시그널로 잡힌 시그널:</b> {smi_signal_count}건\n"
+    
+    if top_signal and smi_signal_count > 0:
+        market = escape_html(top_signal["market"])
+        timeframe = escape_html(top_signal["timeframe"].upper())
+        ticker_info = top_signal.get("ticker_info", {})
+        trade_price = ticker_info.get("acc_trade_price_24h", 0)
+        msg += f"   ㄴ TOP 1 종목: <b>{market} [{timeframe}]</b> (거래대금: {trade_price:,.0f} KRW)\n"
+    
+    msg += "\n"
+    
+    # 2. 필터링 상세 조건
+    if filter_stats:
+        msg += f"<b>2. 필터링 상세 조건:</b>\n"
+        for filter_name, count in filter_stats.items():
+            if count > 0:
+                filter_name_escaped = escape_html(filter_name)
+                msg += f"   - {filter_name_escaped}에 걸린 시그널: {count}건\n"
+    
+    return msg

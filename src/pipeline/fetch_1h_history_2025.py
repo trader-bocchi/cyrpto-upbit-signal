@@ -1,177 +1,156 @@
-"""2025년 전체 1시간 캔들 수집"""
+"""2025년 전체 1시간 캔들 수집 (월 단위 저장)"""
 import pandas as pd
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Dict
 from rich.console import Console
 from rich.progress import track
 
-from src.config import RAW_DATA_PATH, KST_OFFSET_HOURS
-from src.upbit_client import UpbitClient
-from src.storage.csv_store import (
-    get_candle_filepath,
-    read_csv_safe,
-    atomic_write_csv,
-    ensure_candle_dtypes,
+from src.config import RAW_DATA_PATH_1H, META_DATA_PATH
+from src.upbit_client_fast import FastUpbitClient
+from src.storage.monthly_store import (
+    load_monthly_csv,
+    merge_monthly_data,
 )
-from src.storage.dedup import dedup_candles
-from src.storage.checkpoints import save_checkpoint
+from src.storage.missing_logger import log_missing_summary
 
 console = Console()
 
-
-def kst_to_utc_timestamp(kst_str: str) -> int:
-    """KST 시간 문자열을 UTC 타임스탬프(ms)로 변환"""
-    dt = pd.to_datetime(kst_str)
-    # KST를 UTC로 변환 (9시간 빼기)
-    utc_dt = dt - pd.Timedelta(hours=KST_OFFSET_HOURS)
-    return int(utc_dt.timestamp() * 1000)
+# Meta 파일 저장 경로 (CSV와 분리)
+META_ROOT = META_DATA_PATH / "candles_1h"
+META_ROOT.mkdir(parents=True, exist_ok=True)
 
 
-def utc_timestamp_to_kst_str(timestamp_ms: int) -> str:
-    """UTC 타임스탬프(ms)를 KST 문자열로 변환"""
-    dt = datetime.fromtimestamp(timestamp_ms / 1000)
-    kst_dt = dt + timedelta(hours=KST_OFFSET_HOURS)
-    return kst_dt.strftime("%Y-%m-%d %H:%M:%S")
+def parse_kst_string(s: str) -> datetime:
+    """KST 문자열을 datetime으로 파싱"""
+    s = s.replace("T", " ").strip()
+    if "." in s:
+        s = s.split(".")[0]
+    try:
+        return datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        try:
+            return datetime.strptime(s, "%Y-%m-%d %H:%M")
+        except ValueError:
+            raise ValueError(f"날짜 파싱 실패: {s}")
+
+
+def process_candle_data(candles: List[dict], market: str) -> pd.DataFrame:
+    """캔들 데이터를 DataFrame으로 변환"""
+    rows = []
+    ingest_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    for candle in candles:
+        if "candle_date_time_kst" not in candle:
+            continue
+        
+        candle_time_kst = parse_kst_string(candle["candle_date_time_kst"])
+        
+        row = {
+            "market": market,
+            "candle_time_kst": candle_time_kst,
+            "open": float(candle.get("opening_price", 0)),
+            "high": float(candle.get("high_price", 0)),
+            "low": float(candle.get("low_price", 0)),
+            "close": float(candle.get("trade_price", 0)),
+            "volume": float(candle.get("candle_acc_trade_volume", 0)),
+            "trade_value": float(candle.get("candle_acc_trade_price", 0)),
+            "ingest_time_kst": ingest_time,
+        }
+        rows.append(row)
+    
+    return pd.DataFrame(rows)
 
 
 def fetch_1h_candles_2025(markets: Optional[List[str]] = None):
     """
-    2025년 전체 1시간 캔들 수집
+    2025년 전체 1시간 캔들 수집 (월 단위 저장)
     
     Args:
         markets: 마켓 리스트 (None이면 모든 KRW 마켓)
     """
-    client = UpbitClient()
+    client = FastUpbitClient(base_sleep=0.1)
     
     if markets is None:
-        all_markets = client.get_markets()
-        markets = [m["market"] for m in all_markets]
+        all_markets_data = client.get_markets()
+        markets = [m["market"] for m in all_markets_data]
     
     console.print(f"[green]수집 대상: {len(markets)}개 마켓[/green]")
     
     # 2025년 범위 (KST)
-    start_kst = "2025-01-01 00:00:00"
-    end_kst = "2025-12-31 23:00:00"
-    
-    start_ts = kst_to_utc_timestamp(start_kst)
-    end_ts = kst_to_utc_timestamp(end_kst)
+    start_kst = datetime(2025, 1, 1, 0, 0, 0)
+    end_kst = datetime(2025, 12, 31, 23, 0, 0)
     
     for market in track(markets, description="수집 중..."):
         console.print(f"\n[cyan]처리 중: {market}[/cyan]")
         
-        # 기존 데이터 로드
-        filepath = get_candle_filepath(RAW_DATA_PATH, market, "1h", year=2025)
-        existing_df = read_csv_safe(filepath)
+        # 수집 루프
+        current_to = end_kst
+        monthly_chunks: dict[str, List[pd.DataFrame]] = {}
+        request_count = 0
         
-        all_candles = []
-        current_ts = end_ts
-        
-        while current_ts >= start_ts:
-            # Upbit API는 과거부터 현재 방향으로 조회
-            to_str = datetime.fromtimestamp(current_ts / 1000).isoformat() + "Z"
+        while current_to >= start_kst:
+            request_count += 1
             
-            candles = client.get_candles_minutes(
-                market=market,
-                unit=60,
-                to=to_str,
-                count=200,
-            )
+            # API 호출
+            to_str = current_to.strftime("%Y-%m-%dT%H:%M:%S")
+            candles = client.get_candles_minutes(market, unit=60, to=to_str, count=200)
             
             if not candles:
                 break
             
             # DataFrame 변환
-            df = pd.DataFrame(candles)
-            if df.empty:
+            new_df = process_candle_data(candles, market)
+            
+            if new_df.empty:
                 break
             
-            # 컬럼명 변환 및 KST 변환
-            # Upbit API는 candle_date_time_kst를 제공하지만, 없으면 candle_date_time_utc 사용
-            if "candle_date_time_kst" in df.columns:
-                df["candle_time_kst"] = df["candle_date_time_kst"]
-            elif "candle_date_time_utc" in df.columns:
-                # UTC를 KST로 변환
-                df["candle_time_kst"] = pd.to_datetime(df["candle_date_time_utc"]) + pd.Timedelta(hours=KST_OFFSET_HOURS)
-                df["candle_time_kst"] = df["candle_time_kst"].dt.strftime("%Y-%m-%d %H:%M:%S")
-            else:
-                # 타임스탬프로부터 변환
-                df["candle_time_kst"] = pd.to_datetime(df["candle_date_time"], unit="ms") + pd.Timedelta(hours=KST_OFFSET_HOURS)
-                df["candle_time_kst"] = df["candle_time_kst"].dt.strftime("%Y-%m-%d %H:%M:%S")
-            
-            df["market"] = market
-            df["ingest_time_kst"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            # 필요한 컬럼만 선택
-            df = df[
-                [
-                    "market",
-                    "candle_time_kst",
-                    "opening_price",
-                    "high_price",
-                    "low_price",
-                    "trade_price",
-                    "candle_acc_trade_volume",
-                    "ingest_time_kst",
-                ]
-            ]
-            df.columns = [
-                "market",
-                "candle_time_kst",
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
-                "ingest_time_kst",
-            ]
-            
-            all_candles.append(df)
+            # 월별로 그룹화
+            new_df["month_str"] = new_df["candle_time_kst"].dt.strftime("%Y-%m")
+            for month_str, group_df in new_df.groupby("month_str"):
+                if month_str not in monthly_chunks:
+                    monthly_chunks[month_str] = []
+                monthly_chunks[month_str].append(group_df.drop(columns=["month_str"]))
             
             # 다음 배치를 위한 타임스탬프 업데이트
-            # 가장 오래된 캔들의 타임스탬프 사용
-            if "candle_date_time" in df.columns:
-                min_ts_ms = df["candle_date_time"].min()
-                current_ts = min_ts_ms - 1
-            else:
-                min_ts = pd.to_datetime(df["candle_time_kst"]).min()
-                min_ts_utc = kst_to_utc_timestamp(str(min_ts))
-                if min_ts_utc >= current_ts:
-                    break
-                current_ts = min_ts_utc - 1
+            min_time = new_df["candle_time_kst"].min()
+            current_to = min_time - timedelta(seconds=1)
             
-            # Rate limit 고려
-            import time
-            time.sleep(0.1)
+            if min_time < start_kst:
+                break
         
-        if not all_candles:
-            console.print(f"[yellow]  {market}: 데이터 없음[/yellow]")
-            continue
+        # 월별로 저장
+        saved_count = 0
+        for month_str, chunks in monthly_chunks.items():
+            # 월의 첫 날짜로 datetime 생성
+            date_kst = datetime.strptime(month_str + "-01", "%Y-%m-%d")
+            
+            # 기존 데이터 로드
+            existing_df = load_monthly_csv(RAW_DATA_PATH_1H, market, date_kst)
+            
+            # 병합 및 저장
+            new_df = pd.concat(chunks, ignore_index=True)
+            combined_df, meta = merge_monthly_data(existing_df, new_df, RAW_DATA_PATH_1H, META_ROOT, market, date_kst)
+            
+            # 미수집 로깅 (날짜별로)
+            missing_hours_list = meta.get("missing_hours", [])
+            if missing_hours_list:
+                for missing_info in missing_hours_list:
+                    date_str = missing_info.get("date", "")
+                    hours = missing_info.get("hours", [])
+                    if hours:
+                        try:
+                            date_kst_for_log = datetime.strptime(date_str, "%Y-%m-%d")
+                            log_missing_summary(
+                                META_DATA_PATH,
+                                market,
+                                date_kst_for_log,
+                                hours,
+                                meta.get("rows_saved", 0),
+                            )
+                        except:
+                            pass
+            
+            saved_count += 1
         
-        # 병합 및 중복 제거
-        new_df = pd.concat(all_candles, ignore_index=True)
-        if not existing_df.empty:
-            combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-        else:
-            combined_df = new_df
-        
-        combined_df = dedup_candles(combined_df)
-        combined_df = ensure_candle_dtypes(combined_df)
-        
-        # 2025년 데이터만 필터링
-        combined_df["candle_time_kst"] = pd.to_datetime(combined_df["candle_time_kst"])
-        mask = (combined_df["candle_time_kst"] >= start_kst) & (
-            combined_df["candle_time_kst"] <= end_kst
-        )
-        combined_df = combined_df[mask].copy()
-        
-        # 저장
-        atomic_write_csv(combined_df, filepath)
-        
-        # 체크포인트 업데이트
-        if not combined_df.empty:
-            last_time = combined_df["candle_time_kst"].max()
-            save_checkpoint(market, str(last_time))
-        
-        console.print(f"[green]  {market}: {len(combined_df)}개 캔들 저장 완료[/green]")
-
+        console.print(f"[green]  {market}: {saved_count}개월 저장 완료[/green]")

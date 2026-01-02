@@ -4,7 +4,7 @@ from typing import Dict, Optional
 from rich.console import Console
 
 from src.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-from src.telegram.message_format import format_buy_message, format_sell_message
+from src.telegram.message_format import format_buy_message, format_sell_message, format_no_signal_message
 
 console = Console()
 
@@ -46,5 +46,19 @@ class TelegramNotifier:
     def send_sell_signal(self, signal: Dict, ticker_info: Optional[Dict] = None) -> bool:
         """매도 시그널 전송"""
         message = format_sell_message(signal, ticker_info)
+        return self.send_message(message)
+    
+    def send_no_signal(
+        self,
+        date_str: str,
+        reason: str,
+        smi_signal_count: int = 0,
+        top_signal: Optional[Dict] = None,
+        filter_stats: Optional[Dict] = None,
+    ) -> bool:
+        """시그널 없음 메시지 전송"""
+        message = format_no_signal_message(
+            date_str, reason, smi_signal_count, top_signal, filter_stats
+        )
         return self.send_message(message)
 

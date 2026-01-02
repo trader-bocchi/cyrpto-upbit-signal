@@ -73,8 +73,30 @@ def ensure_candle_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     for col, dtype in required_cols.items():
         if col in df.columns:
             if col == "candle_time_kst":
-                if df[col].dtype != dtype:
-                    df[col] = pd.to_datetime(df[col]).dt.tz_localize("Asia/Seoul")
+                # datetime 변환 및 timezone 처리
+                try:
+                    # 먼저 datetime으로 변환 시도
+                    if not pd.api.types.is_datetime64_any_dtype(df[col]):
+                        df[col] = pd.to_datetime(df[col], errors='coerce')
+                    
+                    # datetime 변환이 성공했는지 확인
+                    if pd.api.types.is_datetime64_any_dtype(df[col]):
+                        # timezone 처리
+                        if df[col].dtype.tz is None:
+                            # timezone이 없으면 Asia/Seoul로 설정
+                            df[col] = df[col].dt.tz_localize("Asia/Seoul", ambiguous='infer', nonexistent='shift_forward')
+                        elif str(df[col].dtype.tz) != "Asia/Seoul":
+                            # 다른 timezone이면 Asia/Seoul로 변환
+                            df[col] = df[col].dt.tz_convert("Asia/Seoul")
+                    else:
+                        # datetime 변환 실패 시 다시 시도 (utc=True 옵션 사용)
+                        df[col] = pd.to_datetime(df[col], errors='coerce', utc=True)
+                        if pd.api.types.is_datetime64_any_dtype(df[col]):
+                            df[col] = df[col].dt.tz_convert("Asia/Seoul")
+                except Exception as e:
+                    # 모든 변환 실패 시 경고만 출력하고 원본 유지
+                    import warnings
+                    warnings.warn(f"candle_time_kst 변환 실패: {e}")
             else:
                 df[col] = df[col].astype(dtype)
     
@@ -106,7 +128,8 @@ def get_candle_filepath(
             return base_path / "candles_4h" / f"market={market}" / f"{year}.csv"
         else:
             return base_path / "candles_4h" / f"market={market}" / f"{market}_4h.csv"
-    elif timeframe == "1d":
+    elif timeframe in ["1d", "24h", "d"]:
+        # 1d = 24h = 일봉
         if year:
             return base_path / "candles_1d" / f"market={market}" / f"{year}.csv"
         else:

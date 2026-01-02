@@ -53,6 +53,9 @@ def add_position(
         "entry_price": entry_price,
         "qty": qty,
         "invested_krw": invested_krw,
+        "entry_bar_index": None,  # 타임스탑 계산용 (실시간에서는 0으로 시작)
+        "max_favorable_close_pct": 0.0,  # 타임스탑 계산용
+        "max_adverse_close_pct": 0.0,  # 타임스탑 계산용
     }
     
     save_positions(positions)

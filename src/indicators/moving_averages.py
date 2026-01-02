@@ -1,6 +1,7 @@
 """이동평균 지표"""
 import pandas as pd
 import numpy as np
+from typing import List
 
 
 def sma(series: pd.Series, window: int) -> pd.Series:
