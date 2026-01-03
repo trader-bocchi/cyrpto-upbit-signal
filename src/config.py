@@ -9,9 +9,15 @@ load_dotenv()
 # 프로젝트 루트 경로
 PROJECT_ROOT = Path(__file__).parent.parent
 
-# Telegram 설정
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8444095299:AAFcWNXwA0oNKNvh_TQVMUFVV3GlMLbpEps")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "8139435677")
+# Telegram 설정 (환경 변수 필수, 기본값 없음)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+# 텔레그램 설정 검증
+if not TELEGRAM_BOT_TOKEN:
+    raise ValueError("TELEGRAM_BOT_TOKEN 환경 변수가 설정되지 않았습니다. .env 파일 또는 환경 변수를 확인하세요.")
+if not TELEGRAM_CHAT_ID:
+    raise ValueError("TELEGRAM_CHAT_ID 환경 변수가 설정되지 않았습니다. .env 파일 또는 환경 변수를 확인하세요.")
 
 # 데이터 경로
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "data"))
