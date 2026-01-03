@@ -43,7 +43,13 @@ def read_csv_safe(filepath: Path, **kwargs) -> pd.DataFrame:
         return pd.DataFrame()
     
     try:
-        return pd.read_csv(filepath, **kwargs)
+        df = pd.read_csv(filepath, **kwargs)
+        # SMI 파일인 경우 float64로 명시적 변환 (정밀도 보장)
+        if "smi_momentum" in df.columns:
+            df["smi_momentum"] = pd.to_numeric(df["smi_momentum"], errors='coerce').astype("float64")
+        if "squeeze_on" in df.columns:
+            df["squeeze_on"] = df["squeeze_on"].astype("bool")
+        return df
     except pd.errors.EmptyDataError:
         return pd.DataFrame()
 
@@ -94,9 +100,8 @@ def ensure_candle_dtypes(df: pd.DataFrame) -> pd.DataFrame:
                         if pd.api.types.is_datetime64_any_dtype(df[col]):
                             df[col] = df[col].dt.tz_convert("Asia/Seoul")
                 except Exception as e:
-                    # 모든 변환 실패 시 경고만 출력하고 원본 유지
-                    import warnings
-                    warnings.warn(f"candle_time_kst 변환 실패: {e}")
+                    # 모든 변환 실패 시 경고만 출력하지 않음 (warning 숨김)
+                    pass
             else:
                 df[col] = df[col].astype(dtype)
     

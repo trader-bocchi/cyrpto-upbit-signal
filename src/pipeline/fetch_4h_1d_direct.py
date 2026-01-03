@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 from rich.console import Console
 
-from src.config import DERIVED_DATA_PATH
+from src.config import RAW_DATA_PATH
 from src.upbit_client_fast import FastUpbitClient
 from src.storage.csv_store import (
     read_csv_safe,
@@ -61,7 +61,7 @@ def process_candle_data(candles: List[dict], market: str) -> pd.DataFrame:
 
 def get_last_collected_time(market: str, timeframe: str) -> Optional[datetime]:
     """마켓별 마지막 수집 시각 조회"""
-    filepath = get_candle_filepath(DERIVED_DATA_PATH, market, timeframe, year=2025)
+    filepath = get_candle_filepath(RAW_DATA_PATH, market, timeframe, year=2025)
     df = read_csv_safe(filepath)
     
     if df.empty or "candle_time_kst" not in df.columns:
@@ -191,7 +191,7 @@ def fetch_4h_1d_direct(markets: Optional[List[str]] = None, timeframes: List[str
                     continue
                 
                 # 기존 데이터와 병합
-                filepath = get_candle_filepath(DERIVED_DATA_PATH, market, timeframe, year=2025)
+                filepath = get_candle_filepath(RAW_DATA_PATH, market, timeframe, year=2025)
                 existing_df = read_csv_safe(filepath)
                 
                 if not existing_df.empty:

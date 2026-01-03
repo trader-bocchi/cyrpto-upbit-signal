@@ -182,6 +182,9 @@ def cmd_run_signals(args):
     tickers = client.get_ticker_all_krw()
     ticker_dict = {t["market"]: t for t in tickers}
     
+    # 전체 거래대금 계산 (업비트 전체 시장 규모)
+    total_market_volume = sum(t.get("acc_trade_price_24h", 0) for t in tickers)
+    
     # 거래대금 기준 순위 계산
     sorted_tickers = sorted(tickers, key=lambda x: x.get("acc_trade_price_24h", 0), reverse=True)
     for idx, ticker in enumerate(sorted_tickers, 1):
@@ -205,12 +208,12 @@ def cmd_run_signals(args):
     
     signal_count = 0
     skipped_regime_off = 0
-    skipped_max_positions = 0
     skipped_duplicate = 0
     reduced_size_entries = 0
     
     # 필터링 전 시그널 추적 (상세 정보용)
     raw_signals = []  # SMI로 잡힌 모든 시그널 (필터링 전)
+    filtered_signals = []  # 필터링된 시그널 정보 (종목, 사유)
     
     # 모든 시그널을 먼저 수집하고 거래대금 기준 정렬
     console.print("[cyan]시그널 검사 중...[/cyan]")
@@ -245,9 +248,168 @@ def cmd_run_signals(args):
                     progress.update(task, advance=1)
                     continue
                 
-                # 시그널 감지 (저장된 SMI 사용, 현재 마지막 SMI만 체크)
-                signals = detect_buy_signals(df, market, timeframe_norm, use_saved_smi=True, check_latest_only=True)
+                # 캔들 시간을 datetime으로 변환
+                df["candle_time_kst"] = pd.to_datetime(df["candle_time_kst"])
                 
+                ticker_info = ticker_dict.get(market, {})
+                
+                # verify_smi_signals.py와 동일한 로직으로 시그널 조건 체크
+                from src.indicators.extrema import find_pivot_min
+                from src.indicators.moving_averages import calculate_sma
+                from src.storage.smi_store import load_smi, merge_smi_with_candles
+                from src.config import SMI_LOCAL_MIN_WINDOW, SMI_REQUIRE_NEGATIVE_PIVOT, SIGNAL_ENABLE_SMA50_FILTER
+                
+                # 1. 저장된 SMI 데이터 로드 (verify_smi_signals.py와 동일 - 완성된 캔들 체크 전에 먼저 확인)
+                smi_df = load_smi(market, timeframe_norm, year=None)
+                
+                if smi_df.empty:
+                    processed_count += 1
+                    progress.update(task, advance=1)
+                    continue
+                
+                # 2. 마지막 SMI 값 확인 (verify_smi_signals.py와 동일 - 완성된 캔들 체크 전에 먼저 확인)
+                smi_df_sorted = smi_df.sort_values("candle_time_kst", ascending=True).reset_index(drop=True)
+                last_smi = smi_df_sorted.iloc[-1]["smi_momentum"]
+                
+                if pd.isna(last_smi):
+                    processed_count += 1
+                    progress.update(task, advance=1)
+                    continue
+                
+                # 마지막 SMI 값이 양수/0이면 시그널 없음 (verify_smi_signals.py와 동일)
+                if last_smi >= 0:
+                    filtered_signals.append({
+                        "market": market,
+                        "timeframe": timeframe_norm,
+                        "reason": "SMI 양수/0 (회복 패턴 아님)",
+                        "ticker_info": ticker_info,
+                    })
+                    processed_count += 1
+                    progress.update(task, advance=1)
+                    continue
+                
+                # verify_smi_signals.py와 동일하게 모든 캔들로 시그널 조건 체크 (완성된 캔들 체크 없음)
+                # 3. 캔들 데이터와 SMI 병합 (verify_smi_signals.py와 동일)
+                df_sorted = df.sort_values("candle_time_kst", ascending=True).reset_index(drop=True)
+                smi_df_sorted["candle_time_kst"] = pd.to_datetime(smi_df_sorted["candle_time_kst"])
+                merged_df = df_sorted.merge(
+                    smi_df_sorted[["candle_time_kst", "smi_momentum"]],
+                    on="candle_time_kst",
+                    how="left"
+                )
+                
+                if merged_df.empty or len(merged_df) < SMI_LOCAL_MIN_WINDOW + 3:
+                    filtered_signals.append({
+                        "market": market,
+                        "timeframe": timeframe_norm,
+                        "reason": "데이터 부족",
+                        "ticker_info": ticker_info,
+                    })
+                    processed_count += 1
+                    progress.update(task, advance=1)
+                    continue
+                
+                # 4. 이동평균 계산 (verify_smi_signals.py와 동일)
+                merged_df = calculate_sma(merged_df, periods=[50, 200])
+                
+                # 5. 피벗 찾기 (verify_smi_signals.py와 동일)
+                pivot_info = find_pivot_min(
+                    merged_df["smi_momentum"],
+                    window=SMI_LOCAL_MIN_WINDOW,
+                    require_negative=SMI_REQUIRE_NEGATIVE_PIVOT,
+                )
+                merged_df = pd.concat([merged_df, pivot_info], axis=1)
+                
+                # 6. 마지막 행 체크 (verify_smi_signals.py와 동일)
+                i = len(merged_df) - 1
+                m_i2 = merged_df.iloc[i]["smi_momentum"]
+                
+                if pd.isna(m_i2):
+                    filtered_signals.append({
+                        "market": market,
+                        "timeframe": timeframe_norm,
+                        "reason": "SMI 값 없음",
+                        "ticker_info": ticker_info,
+                    })
+                    processed_count += 1
+                    progress.update(task, advance=1)
+                    continue
+                
+                # 7. 피벗 정보 확인 (verify_smi_signals.py와 동일)
+                pivot_info_row = merged_df.iloc[i]
+                pivot_idx_loc = int(pivot_info_row["pivot_idx"])
+                
+                filter_reason = None
+                signal_eligible = False
+                
+                if pivot_idx_loc < 0:
+                    filter_reason = "SMI 최저점 없음"
+                elif pivot_idx_loc != i - 2:
+                    filter_reason = "SMI 회복 패턴 불일치 (최저점이 2칸 전이 아님)"
+                else:
+                    m_i = merged_df.iloc[pivot_idx_loc]["smi_momentum"]
+                    m_i1 = merged_df.iloc[pivot_idx_loc + 1]["smi_momentum"]
+                    
+                    if pd.isna(m_i) or pd.isna(m_i1):
+                        filter_reason = "SMI 값 없음"
+                    elif not (m_i2 > m_i1 > m_i):
+                        filter_reason = "SMI 상승 패턴 미충족 (연속 상승 아님)"
+                    elif SMI_REQUIRE_NEGATIVE_PIVOT and m_i >= 0:
+                        filter_reason = "SMI 최저점이 음수가 아님"
+                    elif SIGNAL_ENABLE_SMA50_FILTER:
+                        signal_row = merged_df.iloc[i]
+                        if pd.isna(signal_row["sma_50"]) or signal_row["close"] <= signal_row["sma_50"]:
+                            filter_reason = "SMA50 필터 (현재가 <= SMA50)"
+                        else:
+                            # 모든 조건 만족
+                            signal_eligible = True
+                    else:
+                        # SMA50 필터가 비활성화된 경우
+                        signal_eligible = True
+                
+                # 8. 시그널 조건 만족 여부에 따라 처리
+                if not signal_eligible:
+                    if filter_reason:
+                        filtered_signals.append({
+                            "market": market,
+                            "timeframe": timeframe_norm,
+                            "reason": filter_reason,
+                            "ticker_info": ticker_info,
+                        })
+                        # raw_signals에도 추가
+                        raw_signals.append({
+                            "signal": None,
+                            "market": market,
+                            "timeframe": timeframe_norm,
+                            "ticker_info": ticker_info,
+                        })
+                    processed_count += 1
+                    progress.update(task, advance=1)
+                    continue
+                
+                # 9. 시그널 조건 만족 - 시그널 생성 (verify_smi_signals.py와 동일 - 완성된 캔들 체크 제거)
+                signal_row = merged_df.iloc[i]
+                signal_time_kst = signal_row["candle_time_kst"]
+                
+                # 시그널 생성
+                signal = {
+                    "market": market,
+                    "timeframe": timeframe_norm,
+                    "signal_time_kst": str(signal_time_kst),
+                    "side": "BUY",
+                    "close": float(signal_row["close"]),
+                    "smi_pivot_min": float(m_i),
+                    "smi_m_i": float(m_i),
+                    "smi_m_i1": float(m_i1),
+                    "smi_m_i2": float(m_i2),
+                    "sma50": float(signal_row["sma_50"]) if not pd.isna(signal_row["sma_50"]) else None,
+                    "sma200": float(signal_row["sma_200"]) if not pd.isna(signal_row["sma_200"]) else None,
+                    "sma200_above": bool(signal_row["close"] > signal_row["sma_200"]) if not pd.isna(signal_row["sma_200"]) else None,
+                }
+                
+                signals = [signal]
+                
+                # 시그널 처리 (중복, 레짐 필터 등)
                 for signal in signals:
                     # 필터링 전 시그널 저장 (상세 정보용)
                     ticker_info = ticker_dict.get(market, {})
@@ -266,6 +428,12 @@ def cmd_run_signals(args):
                         side="BUY",
                     ):
                         skipped_duplicate += 1
+                        filtered_signals.append({
+                            "market": market,
+                            "timeframe": timeframe_norm,
+                            "reason": "중복 시그널",
+                            "ticker_info": ticker_info,
+                        })
                         continue
                     
                     # [개선 규칙 1] 시장 레짐 필터 체크
@@ -280,21 +448,128 @@ def cmd_run_signals(args):
                             # 레짐 OFF: BTC 1D close <= SMA200
                             if BACKTEST_REGIME_MODE == "BLOCK_ENTRY":
                                 skipped_regime_off += 1
+                                filtered_signals.append({
+                                    "market": market,
+                                    "timeframe": timeframe_norm,
+                                    "reason": "레짐 필터 (BTC 하락장)",
+                                    "ticker_info": ticker_info,
+                                })
                                 continue
                             elif BACKTEST_REGIME_MODE == "REDUCE_SIZE":
                                 reduced_size_entries += 1
                                 # 실시간에서는 알림만 보내므로 플래그만 설정
                                 regime_blocked = True
                     
-                    # [개선 규칙 3-A] 동시 보유 종목 수 상한 체크
-                    # 현재 포지션에 없는 마켓만 체크
-                    existing_position = any(p["market"] == market for p in current_positions)
-                    if not existing_position:
-                        if current_positions_count >= BACKTEST_MAX_POSITIONS:
-                            skipped_max_positions += 1
-                            continue
+                    # 4h 시그널인 경우, 해당 종목의 1d 시그널도 체크
+                    # 1d 시그널인 경우, 해당 종목의 4h 시그널도 체크
+                    has_1d_signal = False
+                    has_4h_signal = False
                     
-                    all_signals.append((signal, market, timeframe_norm, ticker_info, regime_blocked))
+                    if timeframe_norm == "4h":
+                        # 1d 시그널 체크 (verify_smi_signals.py와 동일한 로직)
+                        smi_df_1d = load_smi(market, "1d", year=None)
+                        if not smi_df_1d.empty:
+                            smi_df_1d_sorted = smi_df_1d.sort_values("candle_time_kst", ascending=True).reset_index(drop=True)
+                            last_smi_1d = smi_df_1d_sorted.iloc[-1]["smi_momentum"]
+                            
+                            if not pd.isna(last_smi_1d) and last_smi_1d < 0:
+                                # 1d 캔들 로드
+                                filepath_1d = get_candle_filepath(DERIVED_DATA_PATH, market, "1d", year=2025)
+                                df_1d = read_csv_safe(filepath_1d)
+                                
+                                if not df_1d.empty:
+                                    df_1d["candle_time_kst"] = pd.to_datetime(df_1d["candle_time_kst"])
+                                    df_1d_sorted = df_1d.sort_values("candle_time_kst", ascending=True).reset_index(drop=True)
+                                    
+                                    # SMI 병합
+                                    smi_df_1d_sorted["candle_time_kst"] = pd.to_datetime(smi_df_1d_sorted["candle_time_kst"])
+                                    merged_df_1d = df_1d_sorted.merge(
+                                        smi_df_1d_sorted[["candle_time_kst", "smi_momentum"]],
+                                        on="candle_time_kst",
+                                        how="left"
+                                    )
+                                    
+                                    if not merged_df_1d.empty and len(merged_df_1d) >= SMI_LOCAL_MIN_WINDOW + 3:
+                                        merged_df_1d = calculate_sma(merged_df_1d, periods=[50, 200])
+                                        pivot_info_1d = find_pivot_min(
+                                            merged_df_1d["smi_momentum"],
+                                            window=SMI_LOCAL_MIN_WINDOW,
+                                            require_negative=SMI_REQUIRE_NEGATIVE_PIVOT,
+                                        )
+                                        merged_df_1d = pd.concat([merged_df_1d, pivot_info_1d], axis=1)
+                                        
+                                        i_1d = len(merged_df_1d) - 1
+                                        m_i2_1d = merged_df_1d.iloc[i_1d]["smi_momentum"]
+                                        
+                                        if not pd.isna(m_i2_1d):
+                                            pivot_info_row_1d = merged_df_1d.iloc[i_1d]
+                                            pivot_idx_loc_1d = int(pivot_info_row_1d["pivot_idx"])
+                                            
+                                            if pivot_idx_loc_1d >= 0 and pivot_idx_loc_1d == i_1d - 2:
+                                                m_i_1d = merged_df_1d.iloc[pivot_idx_loc_1d]["smi_momentum"]
+                                                m_i1_1d = merged_df_1d.iloc[pivot_idx_loc_1d + 1]["smi_momentum"]
+                                                
+                                                if (not pd.isna(m_i_1d) and not pd.isna(m_i1_1d) and
+                                                    m_i2_1d > m_i1_1d > m_i_1d and
+                                                    (not SMI_REQUIRE_NEGATIVE_PIVOT or m_i_1d < 0)):
+                                                    signal_row_1d = merged_df_1d.iloc[i_1d]
+                                                    if (not SIGNAL_ENABLE_SMA50_FILTER or
+                                                        (not pd.isna(signal_row_1d["sma_50"]) and signal_row_1d["close"] > signal_row_1d["sma_50"])):
+                                                        has_1d_signal = True
+                    
+                    elif timeframe_norm == "1d":
+                        # 4h 시그널 체크 (verify_smi_signals.py와 동일한 로직)
+                        smi_df_4h = load_smi(market, "4h", year=None)
+                        if not smi_df_4h.empty:
+                            smi_df_4h_sorted = smi_df_4h.sort_values("candle_time_kst", ascending=True).reset_index(drop=True)
+                            last_smi_4h = smi_df_4h_sorted.iloc[-1]["smi_momentum"]
+                            
+                            if not pd.isna(last_smi_4h) and last_smi_4h < 0:
+                                # 4h 캔들 로드
+                                filepath_4h = get_candle_filepath(DERIVED_DATA_PATH, market, "4h", year=2025)
+                                df_4h = read_csv_safe(filepath_4h)
+                                
+                                if not df_4h.empty:
+                                    df_4h["candle_time_kst"] = pd.to_datetime(df_4h["candle_time_kst"])
+                                    df_4h_sorted = df_4h.sort_values("candle_time_kst", ascending=True).reset_index(drop=True)
+                                    
+                                    # SMI 병합
+                                    smi_df_4h_sorted["candle_time_kst"] = pd.to_datetime(smi_df_4h_sorted["candle_time_kst"])
+                                    merged_df_4h = df_4h_sorted.merge(
+                                        smi_df_4h_sorted[["candle_time_kst", "smi_momentum"]],
+                                        on="candle_time_kst",
+                                        how="left"
+                                    )
+                                    
+                                    if not merged_df_4h.empty and len(merged_df_4h) >= SMI_LOCAL_MIN_WINDOW + 3:
+                                        merged_df_4h = calculate_sma(merged_df_4h, periods=[50, 200])
+                                        pivot_info_4h = find_pivot_min(
+                                            merged_df_4h["smi_momentum"],
+                                            window=SMI_LOCAL_MIN_WINDOW,
+                                            require_negative=SMI_REQUIRE_NEGATIVE_PIVOT,
+                                        )
+                                        merged_df_4h = pd.concat([merged_df_4h, pivot_info_4h], axis=1)
+                                        
+                                        i_4h = len(merged_df_4h) - 1
+                                        m_i2_4h = merged_df_4h.iloc[i_4h]["smi_momentum"]
+                                        
+                                        if not pd.isna(m_i2_4h):
+                                            pivot_info_row_4h = merged_df_4h.iloc[i_4h]
+                                            pivot_idx_loc_4h = int(pivot_info_row_4h["pivot_idx"])
+                                            
+                                            if pivot_idx_loc_4h >= 0 and pivot_idx_loc_4h == i_4h - 2:
+                                                m_i_4h = merged_df_4h.iloc[pivot_idx_loc_4h]["smi_momentum"]
+                                                m_i1_4h = merged_df_4h.iloc[pivot_idx_loc_4h + 1]["smi_momentum"]
+                                                
+                                                if (not pd.isna(m_i_4h) and not pd.isna(m_i1_4h) and
+                                                    m_i2_4h > m_i1_4h > m_i_4h and
+                                                    (not SMI_REQUIRE_NEGATIVE_PIVOT or m_i_4h < 0)):
+                                                    signal_row_4h = merged_df_4h.iloc[i_4h]
+                                                    if (not SIGNAL_ENABLE_SMA50_FILTER or
+                                                        (not pd.isna(signal_row_4h["sma_50"]) and signal_row_4h["close"] > signal_row_4h["sma_50"])):
+                                                        has_4h_signal = True
+                    
+                    all_signals.append((signal, market, timeframe_norm, ticker_info, regime_blocked, has_1d_signal, has_4h_signal))
                 
                 processed_count += 1
                 progress.update(task, advance=1)
@@ -304,70 +579,82 @@ def cmd_run_signals(args):
     # 거래대금 기준 정렬
     all_signals.sort(key=lambda x: x[3].get("acc_trade_price_24h", 0), reverse=True)
     
-    # 순차적으로 처리
-    if all_signals:
-        console.print(f"[cyan]시그널 전송 중... ({len(all_signals)}개)[/cyan]")
+    # 요청4: 거래대금 기준 상위 5개만 전송
+    signals_to_send = all_signals[:5] if len(all_signals) > 5 else all_signals
     
-    for signal, market, timeframe, ticker_info, regime_blocked in all_signals:
-        # 알림 전송
-        if notifier.send_buy_signal(signal, ticker_info):
-            mark_signal_sent(
-                market=signal["market"],
-                timeframe=signal["timeframe"],
-                signal_time_kst=signal["signal_time_kst"],
-                side="BUY",
-            )
-            
-            # 포지션 추가 (실시간 트래킹용)
-            entry_price = signal["close"]
-            # 기존 포지션이 있으면 가중평균 병합 (실시간에서는 간단히 업데이트)
-            from src.storage.positions_store import get_position, load_positions, save_positions, get_position_key
-            existing_pos = get_position(market, timeframe)
-            if existing_pos:
-                # 가중평균 계산
-                old_qty = existing_pos.get("qty", 0.0)
-                old_invested = existing_pos.get("invested_krw", 0.0)
-                new_qty = 0.0  # 실제 매수하지 않으므로 0
-                new_invested = 0.0
-                
-                total_qty = old_qty + new_qty
-                total_invested = old_invested + new_invested
-                avg_entry = total_invested / total_qty if total_qty > 0 else entry_price
-                
-                # 포지션 업데이트 (가중평균)
-                positions = load_positions()
-                key = get_position_key(market, timeframe)
-                positions[key]["entry_price"] = avg_entry
-                positions[key]["qty"] = total_qty
-                positions[key]["invested_krw"] = total_invested
-                save_positions(positions)
-            else:
-                # 신규 포지션 추가
-                add_position(
-                    market=market,
-                    timeframe=timeframe,
-                    entry_time_kst=signal["signal_time_kst"],
-                    entry_price=entry_price,
-                    qty=0.0,  # 실제 매수하지 않으므로 0
-                    invested_krw=0.0,
+    # 요청1: 시그널이 여러 개일 경우 하나로 묶어서 전송
+    if signals_to_send:
+        if len(all_signals) > 5:
+            console.print(f"[cyan]시그널 전송 중... (전체 {len(all_signals)}개 중 상위 5개만 전송)[/cyan]")
+        else:
+            console.print(f"[cyan]시그널 전송 중... ({len(signals_to_send)}개)[/cyan]")
+        
+        # 현재 시점 (KST)
+        from datetime import datetime
+        current_time = datetime.now().strftime("%Y년 %m월 %d일 %H시 %M분")
+        
+        # 모든 시그널을 하나의 메시지로 묶어서 전송
+        if notifier.send_buy_signals_batch(signals_to_send, current_time, total_market_volume):
+            # 각 시그널을 마킹
+            for signal, market, timeframe, ticker_info, regime_blocked, has_1d_signal, has_4h_signal in signals_to_send:
+                mark_signal_sent(
+                    market=signal["market"],
+                    timeframe=signal["timeframe"],
+                    signal_time_kst=signal["signal_time_kst"],
+                    side="BUY",
                 )
-                # entry_bar_index 설정 (타임스탑 계산용)
-                positions = load_positions()
-                key = get_position_key(market, timeframe)
-                positions[key]["entry_bar_index"] = 0  # 실시간에서는 0부터 시작
-                positions[key]["max_favorable_close_pct"] = 0.0
-                positions[key]["max_adverse_close_pct"] = 0.0
-                save_positions(positions)
-                # 포지션 수 업데이트
-                current_positions_count += 1
+                
+                # 포지션 추가 (실시간 트래킹용)
+                entry_price = signal["close"]
+                # 기존 포지션이 있으면 가중평균 병합 (실시간에서는 간단히 업데이트)
+                from src.storage.positions_store import get_position, load_positions, save_positions, get_position_key
+                existing_pos = get_position(market, timeframe)
+                if existing_pos:
+                    # 가중평균 계산
+                    old_qty = existing_pos.get("qty", 0.0)
+                    old_invested = existing_pos.get("invested_krw", 0.0)
+                    new_qty = 0.0  # 실제 매수하지 않으므로 0
+                    new_invested = 0.0
+                    
+                    total_qty = old_qty + new_qty
+                    total_invested = old_invested + new_invested
+                    avg_entry = total_invested / total_qty if total_qty > 0 else entry_price
+                    
+                    # 포지션 업데이트 (가중평균)
+                    positions = load_positions()
+                    key = get_position_key(market, timeframe)
+                    positions[key]["entry_price"] = avg_entry
+                    positions[key]["qty"] = total_qty
+                    positions[key]["invested_krw"] = total_invested
+                    save_positions(positions)
+                else:
+                    # 신규 포지션 추가
+                    add_position(
+                        market=market,
+                        timeframe=timeframe,
+                        entry_time_kst=signal["signal_time_kst"],
+                        entry_price=entry_price,
+                        qty=0.0,  # 실제 매수하지 않으므로 0
+                        invested_krw=0.0,
+                    )
+                    # entry_bar_index 설정 (타임스탑 계산용)
+                    positions = load_positions()
+                    key = get_position_key(market, timeframe)
+                    positions[key]["entry_bar_index"] = 0  # 실시간에서는 0부터 시작
+                    positions[key]["max_favorable_close_pct"] = 0.0
+                    positions[key]["max_adverse_close_pct"] = 0.0
+                    save_positions(positions)
+                    # 포지션 수 업데이트
+                    current_positions_count += 1
+                
+                signal_count += 1
             
-            signal_count += 1
-            console.print(f"[green]✅ {market} {timeframe} 매수 시그널 전송[/green]")
+            console.print(f"[green]✅ {len(signals_to_send)}개 매수 시그널 일괄 전송 완료[/green]")
+            if len(all_signals) > 5:
+                console.print(f"[yellow]  (전체 {len(all_signals)}개 중 상위 5개만 전송됨)[/yellow]")
     
     if skipped_regime_off > 0:
         console.print(f"[yellow]BTC 1D close <= SMA200 (레짐 OFF)로 인한 스킵: {skipped_regime_off}개[/yellow]")
-    if skipped_max_positions > 0:
-        console.print(f"[yellow]최대 포지션 초과로 인한 스킵: {skipped_max_positions}개[/yellow]")
     if reduced_size_entries > 0:
         console.print(f"[yellow]BTC 1D close <= SMA200 (레짐 OFF)로 인한 축소 진입: {reduced_size_entries}개[/yellow]")
     
@@ -376,43 +663,10 @@ def cmd_run_signals(args):
     # 시그널이 없을 때 텔레그램 메시지 전송
     if signal_count == 0:
         from datetime import datetime
-        today = datetime.now().strftime("%Y-%m-%d")
+        date_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # 상세 정보 수집
-        smi_signal_count = len(raw_signals)
-        top_signal = None
-        
-        if raw_signals:
-            # 거래대금 기준으로 정렬하여 TOP 1 찾기
-            sorted_raw = sorted(
-                raw_signals,
-                key=lambda x: x["ticker_info"].get("acc_trade_price_24h", 0),
-                reverse=True
-            )
-            top_signal = sorted_raw[0]
-        
-        # 필터별 통계
-        filter_stats = {
-            "레짐 필터 (BTC 1D close <= SMA200)": skipped_regime_off,
-            "최대 포지션 수 초과": skipped_max_positions,
-            "중복 시그널 (이미 전송됨)": skipped_duplicate,
-        }
-        
-        # 시그널이 없는 사유 파악
-        reasons = []
-        if skipped_regime_off > 0:
-            reasons.append(f"BTC 1D close <= SMA200 (레짐 OFF)로 인한 스킵 {skipped_regime_off}개")
-        if skipped_max_positions > 0:
-            reasons.append(f"최대 포지션 초과로 인한 스킵 {skipped_max_positions}개")
-        if not reasons and smi_signal_count == 0:
-            reasons.append("매수 조건을 만족하는 시그널 없음")
-        elif not reasons:
-            reasons.append("모든 시그널이 필터링됨")
-        
-        reason_text = ", ".join(reasons)
-        
-        if notifier.send_no_signal(today, reason_text, smi_signal_count, top_signal, filter_stats):
-            console.print(f"[green]✅ 시그널 없음 메시지 전송: {today}, {reason_text}[/green]")
+        if notifier.send_no_signal(date_time, timeframes):
+            console.print(f"[green]✅ 시그널 없음 메시지 전송: {date_time}[/green]")
 
 
 def cmd_run_sell_check(args):
@@ -522,8 +776,6 @@ def cmd_run_sell_check(args):
 
 def cmd_backtest(args):
     
-    import pandas as pd
-
     """백테스팅 실행"""
     from src.backtest.engine import run_backtest
     from src.backtest.report import save_backtest_results, generate_monthly_report
@@ -661,7 +913,6 @@ def cmd_backtest(args):
 
 def cmd_backtest_mixed(args):
     """혼합 전략 백테스팅 실행 (4h + 1d 시그널 동시 활용)"""
-    import pandas as pd
     from src.backtest.engine_mixed import run_mixed_backtest
     from src.backtest.report import save_backtest_results, generate_monthly_report
     

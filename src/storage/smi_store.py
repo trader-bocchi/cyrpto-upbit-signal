@@ -71,24 +71,81 @@ def save_smi(df: pd.DataFrame, market: str, timeframe: str, year: Optional[int] 
     combined_df["candle_time_kst"] = pd.to_datetime(combined_df["candle_time_kst"])
     combined_df = combined_df.sort_values("candle_time_kst", ascending=True).reset_index(drop=True)
     
-    # 저장
+    # SMI 값 검증 (NaN이나 이상한 값 체크)
+    if "smi_momentum" in combined_df.columns:
+        # NaN이 아닌 값만 확인
+        valid_smi = combined_df["smi_momentum"].notna()
+        if valid_smi.any():
+            smi_values = combined_df.loc[valid_smi, "smi_momentum"]
+            # SMI 값이 모두 0인 경우 경고 (정상적인 경우도 있지만 확인 필요)
+            if (smi_values == 0).all():
+                import warnings
+                warnings.warn(f"SMI 값이 모두 0입니다: {market} {timeframe} {year}")
+    
+    # 저장 (float64로 명시적 변환하여 정밀도 보장)
+    combined_df = combined_df.copy()
+    if "smi_momentum" in combined_df.columns:
+        combined_df["smi_momentum"] = combined_df["smi_momentum"].astype("float64")
+    if "squeeze_on" in combined_df.columns:
+        combined_df["squeeze_on"] = combined_df["squeeze_on"].astype("bool")
+    
     atomic_write_csv(combined_df, filepath)
 
 
 def load_smi(market: str, timeframe: str, year: Optional[int] = None) -> pd.DataFrame:
     """
-    SMI 지표 로드
+    SMI 지표 로드 (모든 연도 데이터 포함)
     
     Args:
         market: 마켓 코드
         timeframe: 시간프레임
-        year: 연도
+        year: 연도 (None이면 모든 연도 로드)
     
     Returns:
         SMI DataFrame
     """
-    filepath = get_smi_filepath(market, timeframe, year)
-    return read_csv_safe(filepath)
+    if year is not None:
+        # 특정 연도만 로드
+        filepath = get_smi_filepath(market, timeframe, year)
+        return read_csv_safe(filepath)
+    
+    # 모든 연도 데이터 로드
+    base_path = DERIVED_DATA_PATH / "indicators" / f"smi_{timeframe}" / f"market={market}"
+    
+    if not base_path.exists():
+        return pd.DataFrame()
+    
+    all_smi_dfs = []
+    
+    # 모든 year 디렉토리 찾기
+    for year_dir in base_path.iterdir():
+        if year_dir.is_dir() and year_dir.name.startswith("year="):
+            year_file = year_dir / f"{year_dir.name.replace('year=', '')}.csv"
+            if year_file.exists():
+                df = read_csv_safe(year_file)
+                if not df.empty:
+                    all_smi_dfs.append(df)
+    
+    if not all_smi_dfs:
+        return pd.DataFrame()
+    
+    # 모든 데이터 병합
+    combined_df = pd.concat(all_smi_dfs, ignore_index=True)
+    
+    # 중복 제거 (market, candle_time_kst 기준)
+    combined_df = combined_df.drop_duplicates(subset=["market", "candle_time_kst"], keep="last")
+    
+    # 정렬
+    combined_df["candle_time_kst"] = pd.to_datetime(combined_df["candle_time_kst"])
+    combined_df = combined_df.sort_values("candle_time_kst", ascending=True).reset_index(drop=True)
+    
+    # SMI 값 타입 보장 (float64로 명시적 변환)
+    if "smi_momentum" in combined_df.columns:
+        combined_df["smi_momentum"] = combined_df["smi_momentum"].astype("float64")
+    if "squeeze_on" in combined_df.columns:
+        combined_df["squeeze_on"] = combined_df["squeeze_on"].astype("bool")
+    
+    return combined_df
 
 
 def merge_smi_with_candles(candles_df: pd.DataFrame, smi_df: pd.DataFrame) -> pd.DataFrame:

@@ -1,5 +1,5 @@
 """텔레그램 메시지 포맷팅"""
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 
 def escape_html(text: str) -> str:
@@ -10,6 +10,120 @@ def escape_html(text: str) -> str:
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
+
+
+def format_buy_signals_batch(signals: List[tuple], current_time: Optional[str] = None, total_market_volume: Optional[float] = None) -> str:
+    """
+    여러 매수 시그널을 하나의 메시지로 포맷팅
+    
+    Args:
+        signals: (signal, market, timeframe, ticker_info, regime_blocked, has_1d_signal) 튜플 리스트
+        current_time: 현재 시점 (예: "2025-01-15 14:30")
+        total_market_volume: 업비트 전체 거래대금 (원 단위)
+    
+    Returns:
+        포맷팅된 메시지
+    """
+    if not signals:
+        return ""
+    
+    msg = ""
+    
+    # 제일 상단: 현재 시점 및 전체 거래대금 요약
+    if current_time:
+        msg += f"⏰ <b>시그널 시점:</b> {escape_html(current_time)}\n"
+    
+    if total_market_volume is not None and total_market_volume > 0:
+        # 거래대금을 조 단위로 변환
+        total_trillion = total_market_volume / 1000000000000  # 조 단위
+        if total_trillion >= 1:
+            msg += f"💰 <b>업비트 전체 거래대금:</b> {total_trillion:.1f}조원\n"
+        else:
+            # 1조 미만이면 억 단위로 표시
+            total_billion = total_market_volume / 100000000
+            msg += f"💰 <b>업비트 전체 거래대금:</b> {total_billion:.1f}억원\n"
+    
+    # 시간프레임 정보 추출 (시그널에서)
+    timeframes_in_signals = set()
+    for signal_tuple in signals:
+        if len(signal_tuple) >= 3:
+            _, _, timeframe, _, _, _, _ = signal_tuple[:7] if len(signal_tuple) >= 7 else (*signal_tuple[:3], None, None, False, False)
+            if timeframe:
+                timeframes_in_signals.add(timeframe.lower())
+    
+    # 시간프레임 표시 (4h -> 4시간, 1d -> 1일)
+    timeframe_display = []
+    if "4h" in timeframes_in_signals:
+        timeframe_display.append("4시간")
+    if "1d" in timeframes_in_signals:
+        timeframe_display.append("1일")
+    
+    if timeframe_display:
+        msg += f"📊 <b>캔들 기준:</b> {' / '.join(timeframe_display)} 캔들\n"
+    
+    if current_time or (total_market_volume is not None and total_market_volume > 0) or timeframe_display:
+        msg += "\n"
+    
+    msg += f"✅ <b>BUY SIGNAL</b>\n\n"
+    
+    for signal_tuple in signals:
+        # 튜플 길이에 따라 호환성 처리 (기존 코드와의 호환)
+        if len(signal_tuple) == 7:
+            signal, market, timeframe, ticker_info, regime_blocked, has_1d_signal, has_4h_signal = signal_tuple
+        elif len(signal_tuple) == 6:
+            signal, market, timeframe, ticker_info, regime_blocked, has_1d_signal = signal_tuple
+            has_4h_signal = False
+        else:
+            # 기존 형식 (5개 요소) 지원
+            signal, market, timeframe, ticker_info, regime_blocked = signal_tuple[:5]
+            has_1d_signal = False
+            has_4h_signal = False
+        
+        market_escaped = escape_html(market)
+        timeframe_escaped = escape_html(timeframe.upper())
+        
+        # 거래대금 (억 단위로 변환)
+        trade_price_24h = ticker_info.get("acc_trade_price_24h", 0) if ticker_info else 0
+        trade_price_billion = trade_price_24h / 100000000  # 억 단위
+        
+        # 순위 (전체 종목 중 실제 순위 - ticker_info에서 가져옴)
+        # ticker_info는 이미 전체 종목 중의 순위가 설정되어 있음
+        rank = ticker_info.get("rank", 0) if ticker_info else 0
+        total = ticker_info.get("total_markets", 0) if ticker_info else 0
+        
+        # 거래대금 포맷팅 (조 단위로 표시)
+        if trade_price_billion >= 10000:  # 1조 이상
+            trade_price_str = f"{trade_price_billion / 10000:.1f}조"
+        else:
+            trade_price_str = f"{trade_price_billion:.1f}억"
+        
+        # 시그널 정보 ([4H/1D] 제거)
+        signal_line = f"• <b>{market_escaped}</b>"
+        if trade_price_24h > 0:
+            signal_line += f" (거래대금: {trade_price_str}"
+            if rank > 0 and total > 0:
+                # 시그널이 잡힌 종목의 실제 거래순위 표시 (예: 15/232)
+                signal_line += f", 거래순위: {rank}/{total}위"
+            
+            # 4h 시그널인 경우 1d 시그널 여부 표시
+            if timeframe == "4h":
+                if has_1d_signal:
+                    signal_line += ", 1일캔들: 시그널 있음"
+                else:
+                    signal_line += ", 1일캔들: 시그널 없음"
+            
+            # 1d 시그널인 경우 4h 시그널 여부 표시
+            if timeframe == "1d":
+                if has_4h_signal:
+                    signal_line += ", 4시간캔들: 시그널 있음"
+                else:
+                    signal_line += ", 4시간캔들: 시그널 없음"
+            
+            signal_line += ")"
+        
+        msg += signal_line + "\n"
+    
+    return msg
 
 
 def format_buy_message(signal: Dict, ticker_info: Optional[Dict] = None) -> str:
@@ -148,46 +262,28 @@ def format_sell_message(signal: Dict, ticker_info: Optional[Dict] = None) -> str
 
 def format_no_signal_message(
     date_str: str,
-    reason: str,
-    smi_signal_count: int = 0,
-    top_signal: Optional[Dict] = None,
-    filter_stats: Optional[Dict] = None,
+    timeframes: List[str],
 ) -> str:
     """
-    시그널 없음 메시지 포맷팅
+    시그널 없음 메시지 포맷팅 (간단 버전)
     
     Args:
-        date_str: 날짜 문자열 (YYYY-MM-DD)
-        reason: 시그널이 없는 사유
-        smi_signal_count: SMI로 잡힌 시그널 개수
-        top_signal: 거래대금 기준 TOP 1 시그널 정보
-        filter_stats: 필터별 통계
+        date_str: 날짜 및 시간 문자열 (YYYY-MM-DD HH:MM:SS)
+        timeframes: 시간프레임 리스트 (예: ["4h", "1d"])
     """
-    date = escape_html(date_str)
-    reason_text = escape_html(reason)
+    date_time = escape_html(date_str)
+    
+    # 시간프레임 표시 (4h -> 4시간, 1d -> 1일)
+    timeframe_display = []
+    for tf in timeframes:
+        if tf.lower() == "4h":
+            timeframe_display.append("4시간")
+        elif tf.lower() in ["1d", "24h", "d"]:
+            timeframe_display.append("1일")
     
     msg = f"📭 <b>시그널 없음</b>\n\n"
-    msg += f"📅 <b>날짜:</b> {date}\n"
-    msg += f"📋 <b>사유:</b> {reason_text}\n\n"
-    
-    # 1. SMI 시그널로 잡힌 시그널 개수
-    msg += f"<b>1. SMI 시그널로 잡힌 시그널:</b> {smi_signal_count}건\n"
-    
-    if top_signal and smi_signal_count > 0:
-        market = escape_html(top_signal["market"])
-        timeframe = escape_html(top_signal["timeframe"].upper())
-        ticker_info = top_signal.get("ticker_info", {})
-        trade_price = ticker_info.get("acc_trade_price_24h", 0)
-        msg += f"   ㄴ TOP 1 종목: <b>{market} [{timeframe}]</b> (거래대금: {trade_price:,.0f} KRW)\n"
-    
-    msg += "\n"
-    
-    # 2. 필터링 상세 조건
-    if filter_stats:
-        msg += f"<b>2. 필터링 상세 조건:</b>\n"
-        for filter_name, count in filter_stats.items():
-            if count > 0:
-                filter_name_escaped = escape_html(filter_name)
-                msg += f"   - {filter_name_escaped}에 걸린 시그널: {count}건\n"
+    if timeframe_display:
+        msg += f"📊 <b>캔들 기준:</b> {' / '.join(timeframe_display)} 캔들\n"
+    msg += f"📅 <b>시그널 시점:</b> {date_time}\n"
     
     return msg

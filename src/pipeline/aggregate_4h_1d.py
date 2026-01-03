@@ -35,11 +35,11 @@ def load_1h_data_for_market(
     """
     all_dfs = []
     
-    # 월 단위 파일 스캔
+    # 월 단위 파일 스캔 (start_date가 None이면 모든 데이터 로드)
     if start_date is None:
-        start_date = datetime(2025, 1, 1)
+        start_date = datetime(2025, 1, 1)  # 최소 시작 날짜
     if end_date is None:
-        end_date = datetime(2025, 12, 31)
+        end_date = datetime.now()  # 현재까지
     
     # 월별로 반복
     current_date = start_date.replace(day=1)
@@ -297,19 +297,77 @@ def aggregate_timeframes(markets: Optional[List[str]] = None, timeframes: List[s
                     console.print(f"[dim]    입력 컬럼: {list(df_1h.columns)}[/dim]")
                 continue
             
-            # 기존 데이터와 병합 및 중복 제거
-            # 집계 결과는 기존 방식 유지 (단일 파일)
+            # 기존 데이터 확인 및 증분 집계
             from src.storage.csv_store import get_candle_filepath
+            from src.storage.dedup import validate_no_duplicates
             filepath_agg = get_candle_filepath(DERIVED_DATA_PATH, market, timeframe, year=2025)
             existing_df = read_csv_safe(filepath_agg)
             
-            if not existing_df.empty:
-                combined_df = pd.concat([existing_df, agg_df], ignore_index=True)
-            else:
-                combined_df = agg_df
+            # 집계 결과의 시간을 datetime으로 변환
+            agg_df["candle_time_kst"] = pd.to_datetime(agg_df["candle_time_kst"])
             
-            combined_df = dedup_candles(combined_df)
+            if not existing_df.empty:
+                # 기존 데이터의 마지막 시간 확인
+                existing_df["candle_time_kst"] = pd.to_datetime(existing_df["candle_time_kst"])
+                last_time = existing_df["candle_time_kst"].max()
+                
+                # 집계 결과의 시간을 datetime으로 변환
+                agg_df["candle_time_kst"] = pd.to_datetime(agg_df["candle_time_kst"])
+                
+                # 마지막 시간 이후의 데이터 + 마지막 시간과 같은 시간의 데이터도 포함 (업데이트 반영)
+                # 마지막 시간과 같은 시간의 데이터는 업데이트될 수 있으므로 포함
+                new_agg_df = agg_df[agg_df["candle_time_kst"] >= last_time].copy()
+                
+                if new_agg_df.empty:
+                    console.print(f"[dim]  {market} {timeframe}: 새로운 데이터 없음 (기존: {len(existing_df)}개, 마지막: {last_time})[/dim]")
+                    continue
+                
+                # 기존 데이터에서 마지막 시간 이후의 데이터 제거 (업데이트를 위해)
+                # 마지막 시간 이후의 데이터는 신규 데이터로 대체
+                existing_df_filtered = existing_df[existing_df["candle_time_kst"] < last_time].copy()
+                
+                # 기존 데이터(마지막 시간 이전) + 신규 데이터(마지막 시간 이후 또는 같은 시간)
+                combined_df = pd.concat([existing_df_filtered, new_agg_df], ignore_index=True)
+                
+                # 중복 제거 (같은 시간의 데이터가 있으면 최신 것만 유지)
+                before_dedup = len(combined_df)
+                combined_df = dedup_candles(combined_df)
+                after_dedup = len(combined_df)
+                
+                if before_dedup != after_dedup:
+                    console.print(f"[yellow]  {market} {timeframe}: 중복 제거됨 ({before_dedup}개 → {after_dedup}개)[/yellow]")
+                
+                # 최종 중복 검증
+                if not validate_no_duplicates(combined_df):
+                    console.print(f"[red]  {market} {timeframe}: 경고! 중복이 여전히 존재합니다![/red]")
+                
+                # 업데이트된 행 수 계산
+                updated_count = len(new_agg_df[new_agg_df["candle_time_kst"] == last_time])
+                new_count = len(new_agg_df[new_agg_df["candle_time_kst"] > last_time])
+                
+                if updated_count > 0:
+                    console.print(f"[cyan]  {market} {timeframe}: 기존 {len(existing_df)}개 → {len(combined_df)}개 (업데이트: {updated_count}개, 신규: {new_count}개)[/cyan]")
+                else:
+                    console.print(f"[cyan]  {market} {timeframe}: 기존 {len(existing_df)}개 + 신규 {new_count}개 = 총 {len(combined_df)}개[/cyan]")
+            else:
+                # 기존 데이터가 없으면 전체 집계 결과 사용
+                combined_df = agg_df.copy()
+                
+                # 중복 제거 (안전장치)
+                before_dedup = len(combined_df)
+                combined_df = dedup_candles(combined_df)
+                after_dedup = len(combined_df)
+                
+                if before_dedup != after_dedup:
+                    console.print(f"[yellow]  {market} {timeframe}: 중복 제거됨 ({before_dedup}개 → {after_dedup}개)[/yellow]")
+                
+                console.print(f"[cyan]  {market} {timeframe}: 신규 집계 {len(combined_df)}개[/cyan]")
+            
+            # 데이터 타입 보장
             combined_df = ensure_candle_dtypes(combined_df)
+            
+            # 최종 정렬 (시간순)
+            combined_df = combined_df.sort_values("candle_time_kst", ascending=True).reset_index(drop=True)
             
             # 저장
             atomic_write_csv(combined_df, filepath_agg)

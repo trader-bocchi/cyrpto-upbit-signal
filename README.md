@@ -54,9 +54,11 @@ python scripts/collect_upbit_1h_2025.py
 # 1h 증분 수집
 python -m src.cli fetch-daily
 
+# 4h, 1d 캔들 수집
+python -m src.cli fetch-4h-1d-direct
+
 # 4시간/ 1일 캔들 집계
 python -m src.cli aggregate --timeframes 4h,1d
-
 ```
 
 ### 3. SMI 지표 계산 및 저장
@@ -88,64 +90,67 @@ python -m src.cli backtest --year 2025 --mixed
 
 ## 최근 시그널 활용 백테스팅 (4시간, 1일)
 python -m src.cli calculate-smi --timeframes 4h,1d
+
+python -m src.cli calculate-smi --timeframes 4h --markets KRW-MON
+
 python -m src.cli backtest --last-days 30 --timeframes 4h,1d
 ```
 
-## 백테스팅 개선 규칙
-백테스팅 엔진에는 다음 3가지 개선 규칙이 적용됩니다:
+``` 
+백테스팅 적용 로직
 
-### 1. 시장 레짐 필터 (BTC 1D SMA200)
+- SMI 기반 매수 시그널
+ㄴ 규칙 1: 시장 레짐 필터 (BTC 1D SMA200)
+ㄴ 규칙 2: 동시 보유 종목 수 상한
+ㄴ 규칙 3: 단일 종목 최대 비중 상한
 
-- **전략 ON 조건**: BTC 1D close > BTC 1D SMA200인 경우에만 신규 진입(BUY) 허용
-- **전략 OFF 조건**: BTC 1D close <= BTC 1D SMA200인 경우 신규 진입 차단 또는 비중 축소
-- **모드**:
-  - `BLOCK_ENTRY` (기본): 레짐 OFF 시 신규 진입 완전 차단
-  - `REDUCE_SIZE`: 레짐 OFF 시 진입 비중을 20%로 축소 (기본값, `BACKTEST_REGIME_REDUCE_SIZE_FACTOR`로 조정 가능)
-- **설정**: `.env` 파일에서 `BACKTEST_REGIME_ENABLED`, `BACKTEST_REGIME_MODE`, `BACKTEST_REGIME_REDUCE_SIZE_FACTOR`로 제어
 
-### 2. 타임스탑 (Time Stop)
+- 매수조건
+진입 금액: 현금 보유의 10%
+수수료: 0.05%
 
-- **정의**: 진입 후 N bars 이내에 익절(+5%)이 발생하지 않으면 N번째 bar의 close로 강제 청산
-- **파라미터**:
-  - 4h 전략: 12 bars (약 2일)
-  - 1d 전략: 7 bars (약 1주)
-  - 1h 전략: 24 bars (약 1일)
-  - 혼합 전략: 4h와 1d 중 더 짧은 값 사용 (7 bars)
-- **우선순위**: 손절/익절이 먼저 발생하면 타임스탑은 적용되지 않음
-- **설정**: `.env` 파일에서 `BACKTEST_TIME_STOP_ENABLED`, `BACKTEST_TIME_STOP_BARS_4H`, `BACKTEST_TIME_STOP_BARS_1D`, `BACKTEST_TIME_STOP_BARS_1H`로 제어
+- 매도실행
+1순위: 손절 (STOP)
+보유 2% 이하시
+2순위: 익절 (TAKE)
+보유 5% 이상시
 
-### 3. 노출 상한 (리스크 캡)
+3순위: 타임스탑 (TIME_STOP)
+4h: 최대 2일 보유
+1d: 최대 7일 보유
 
-- **A) 동시 보유 종목 수 상한**: 최대 10개 종목 동시 보유 제한
-  - 신규 BUY 시 현재 보유 종목 수가 10개 이상이면 진입 스킵
-  - 설정: `.env` 파일에서 `BACKTEST_MAX_POSITIONS`로 제어 (기본값: 10)
-- **B) 한 종목 최대 비중 상한**: 한 종목의 비중이 equity의 15%를 초과하지 못하도록 제한
-  - 신규 매수 시 허용 가능한 최대 가치를 계산하여 invest_amount를 자동 조정
-  - 설정: `.env` 파일에서 `BACKTEST_MAX_SINGLE_POSITION_WEIGHT`로 제어 (기본값: 0.15)
-- **처리 순서**: 
-  1. 레짐 필터 적용
-  2. 최대 포지션 수 체크
-  3. 최대 비중 체크 및 invest_amount 조정
-  4. 거래대금 기준 정렬 후 순차 처리
 
-### 백테스팅 리포트 통계
+```
 
-백테스팅 결과에는 다음 통계가 포함됩니다:
+### 6. 시각화
 
-- **월별 리포트**:
-  - TIME_STOP 청산 횟수
-  - TIME_STOP 평균 수익률
-- **전체 통계**:
-  - 레짐 OFF 기간의 스킵된 진입 횟수 (BLOCK_ENTRY 모드)
-  - 축소 진입 횟수 (REDUCE_SIZE 모드)
-  - 최대 포지션 수 초과로 인한 스킵 횟수
-  - 최대 비중 초과로 인한 스킵/컷 횟수
-  - 타임스탑 청산 횟수
+``` bash
+# 기본 사용 (화면에 표시)
+python candle_smi_chart.py --market KRW-BTC --timeframes 4h,1d
 
-### 실시간 시그널에도 동일 규칙 적용
+# 최근 30일 데이터 (기본값)
+python candle_smi_chart.py --market KRW-BTC --timeframes 4h,1d --days 30
 
-`python -m src.cli run-signals` 명령 실행 시에도 다음 규칙이 적용됩니다:
+# 파일로 저장
+python candle_smi_chart.py --market KRW-BTC --timeframes 4h,1d --output charts/
 
-- **시장 레짐 필터**: BTC 1D SMA200 기준으로 신규 진입 차단/축소
-- **동시 보유 종목 수 상한**: 최대 10개 종목 제한
-- **거래대금 기준 정렬**: 모든 시그널을 거래대금 기준으로 정렬 후 순차 처리
+# 여러 시간프레임 동시 생성
+python candle_smi_chart.py --market KRW-MON --timeframes 4h,1d --days 30
+```
+
+
+### 7. run all
+
+``` bash
+python -m src.cli fetch-daily
+python -m src.cli fetch-4h-1d-direct
+python -m src.cli aggregate --timeframes 4h,1d
+python -m src.cli calculate-smi --timeframes 4h,1d
+python -m src.cli run-signals --timeframes 4h
+python -m src.cli run-signals --timeframes 1d
+#1
+
+### 진짜 시그널 없는지 리체크하는 코드
+python verify_smi_signals.py
+
+```
