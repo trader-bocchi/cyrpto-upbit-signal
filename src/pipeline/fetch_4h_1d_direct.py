@@ -86,7 +86,9 @@ def fetch_timeframe_direct(
         start_kst: 시작 시각 (None이면 마지막 수집 시각 이후)
         end_kst: 종료 시각 (None이면 현재)
     """
-    client = FastUpbitClient(base_sleep=0.1)
+    # 1d 캔들 수집 시 더 긴 타임아웃 사용
+    timeout = 30 if timeframe == "1d" else 20
+    client = FastUpbitClient(base_sleep=0.1, request_timeout=timeout)
     
     # 시간프레임별 unit 설정
     if timeframe == "4h":
@@ -118,41 +120,67 @@ def fetch_timeframe_direct(
     last_min_time = None
     same_time_count = 0
     MAX_SAME_TIME_COUNT = 3
+    max_iterations = 1000  # 최대 반복 횟수 제한
+    iteration_count = 0
     
-    while current_to >= start_kst:
-        # API 호출
-        to_str = current_to.strftime("%Y-%m-%dT%H:%M:%S")
-        candles = client.get_candles_minutes(market, unit=unit, to=to_str, count=200)
+    while current_to >= start_kst and iteration_count < max_iterations:
+        iteration_count += 1
         
-        if not candles or len(candles) == 0:
-            break
-        
-        # DataFrame 변환
-        df = process_candle_data(candles, market)
-        
-        if df.empty:
-            break
-        
-        # 최소 시간 확인
-        min_time = df["candle_time_kst"].min()
-        
-        # 무한 루프 방지
-        if last_min_time is not None:
-            if min_time >= last_min_time:
-                same_time_count += 1
-                if same_time_count >= MAX_SAME_TIME_COUNT:
-                    break
+        try:
+            # API 호출
+            # 1d 캔들도 ISO8601 형식(YYYY-MM-DDTHH:MM:SS) 사용
+            # 참고: https://api.upbit.com/v1/candles/days?market=KRW-WAXP&count=200&to=2026-01-04T00:00:00
+            to_str = current_to.strftime("%Y-%m-%dT%H:%M:%S")
+            console.print(f"    [API 호출 {iteration_count}] {to_str}")
+            candles = client.get_candles_minutes(market, unit=unit, to=to_str, count=200)
+            
+            if not candles or len(candles) == 0:
+                console.print(f"    [완료] 더 이상 데이터 없음")
+                break
+            
+            # DataFrame 변환
+            df = process_candle_data(candles, market)
+            
+            if df.empty:
+                console.print(f"    [완료] 변환된 데이터 없음")
+                break
+            
+            # 최소 시간 확인
+            min_time = df["candle_time_kst"].min()
+            
+            # 무한 루프 방지
+            if last_min_time is not None:
+                if min_time >= last_min_time:
+                    same_time_count += 1
+                    if same_time_count >= MAX_SAME_TIME_COUNT:
+                        console.print(f"    [완료] 같은 시간대 반복 ({same_time_count}회), 수집 중단")
+                        break
+                else:
+                    same_time_count = 0
+            
+            last_min_time = min_time
+            all_dfs.append(df)
+            
+            console.print(f"    [진행] {len(df)}개 캔들 수집, 총 {len(all_dfs)}회 API 호출")
+            
+            # 다음 배치
+            # 1d 캔들은 하루씩 이동
+            if timeframe == "1d":
+                current_to = min_time - timedelta(days=1)
             else:
-                same_time_count = 0
-        
-        last_min_time = min_time
-        all_dfs.append(df)
-        
-        # 다음 배치
-        current_to = min_time - timedelta(seconds=1)
-        
-        if min_time < start_kst:
+                current_to = min_time - timedelta(seconds=1)
+            
+            if min_time < start_kst:
+                break
+                
+        except Exception as e:
+            console.print(f"    [오류] API 호출 실패: {e}")
+            import traceback
+            console.print(f"[red]{traceback.format_exc()}[/red]")
             break
+    
+    if iteration_count >= max_iterations:
+        console.print(f"    [경고] 최대 반복 횟수({max_iterations}) 도달, 수집 중단")
     
     if not all_dfs:
         return pd.DataFrame()

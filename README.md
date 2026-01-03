@@ -143,7 +143,7 @@ python candle_smi_chart.py --market KRW-MON --timeframes 4h,1d --days 30
 
 ``` bash
 python -m src.cli fetch-daily
-python -m src.cli fetch-4h-1d-direct
+# python -m src.cli fetch-4h-1d-direct
 python -m src.cli aggregate --timeframes 4h,1d
 python -m src.cli calculate-smi --timeframes 4h,1d
 python -m src.cli run-signals --timeframes 4h
@@ -152,5 +152,9 @@ python -m src.cli run-signals --timeframes 1d
 
 ### 진짜 시그널 없는지 리체크하는 코드
 python verify_smi_signals.py
+
+### 최근 90일치 데이터를 가져와서 신호 생성하는 코드 (github action용)
+python batch/main.py
+
 
 ```

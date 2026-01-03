@@ -17,7 +17,7 @@ class FastUpbitClient:
     def __init__(
         self,
         base_sleep: float = 0.15,  # 기본 sleep (0.1 -> 0.15로 증가하여 자연스러운 속도 제한)
-        request_timeout: int = 20,
+        request_timeout: int = 30,  # 타임아웃 증가 (20 -> 30초, 1d 캔들 수집 시 더 긴 응답 시간 고려)
         max_retries: int = 10,
         backoff_base: float = 2.0,
     ):
@@ -102,6 +102,18 @@ class FastUpbitClient:
         """재시도 로직 포함 요청"""
         url = f"{self.base_url}/{endpoint}"
         
+        # 디버깅: 요청 정보 로그 (days 엔드포인트인 경우)
+        if endpoint == "candles/days":
+            # 실제 요청 URL 구성 (params를 query string으로 변환)
+            if params:
+                from urllib.parse import urlencode
+                query_string = urlencode(params)
+                full_url = f"{url}?{query_string}"
+            else:
+                full_url = url
+            console.print(f"[dim]    [DEBUG] 요청 URL: {full_url}[/dim]")
+            console.print(f"[dim]    [DEBUG] 요청 파라미터: {params}[/dim]")
+        
         for attempt in range(self.max_retries):
             try:
                 # Rate Limit 예방
@@ -111,7 +123,17 @@ class FastUpbitClient:
                     # 속도 제한 모드에서는 더 긴 대기
                     time.sleep(self.rate_limit_sleep)
                 
+                # 요청 전 시간 기록
+                request_start = time.time()
+                if endpoint == "candles/days" and attempt == 0:
+                    console.print(f"[dim]    [DEBUG] API 요청 시작 (시도 {attempt + 1}/{self.max_retries})...[/dim]")
+                
                 response = self.session.request(method, url, params=params, timeout=self.request_timeout)
+                request_elapsed = time.time() - request_start
+                
+                # 디버깅: 응답 정보 로그 (days 엔드포인트인 경우)
+                if endpoint == "candles/days":
+                    console.print(f"[dim]    [DEBUG] 응답 상태: {response.status_code}, 소요 시간: {request_elapsed:.2f}초[/dim]")
                 
                 # 429 처리
                 if response.status_code == 429:
@@ -122,8 +144,23 @@ class FastUpbitClient:
                     # 정상 응답이면 429 카운터 리셋
                     if self.consecutive_429_count > 0:
                         self.consecutive_429_count = 0
-                    return response.json()
+                    try:
+                        result = response.json()
+                        # 디버깅: 응답 데이터 로그 (days 엔드포인트인 경우, 첫 번째 시도만)
+                        if endpoint == "candles/days" and attempt == 0:
+                            data_count = len(result) if isinstance(result, list) else 0
+                            console.print(f"[dim]    [DEBUG] 응답 데이터 개수: {data_count}[/dim]")
+                        return result
+                    except ValueError as e:
+                        # JSON 파싱 실패
+                        console.print(f"[red]JSON 파싱 실패: {e}[/red]")
+                        console.print(f"[red]응답 내용: {response.text[:200]}[/red]")
+                        return None
                 else:
+                    # 에러 응답 로그
+                    if endpoint == "candles/days":
+                        console.print(f"[red]    [DEBUG] 에러 응답: {response.status_code}[/red]")
+                        console.print(f"[red]    [DEBUG] 응답 내용: {response.text[:200]}[/red]")
                     response.raise_for_status()
                     
             except requests.exceptions.Timeout:
@@ -170,13 +207,44 @@ class FastUpbitClient:
         """
         params = {
             "market": market,
-            "unit": unit,
             "count": min(count, 200),  # 최대 200
         }
-        if to:
-            params["to"] = to
         
-        # unit에 따라 엔드포인트 동적 생성
-        endpoint = f"candles/minutes/{unit}"
+        # 1일(1440분) 캔들은 candles/days 엔드포인트 사용
+        if unit == 1440:
+            endpoint = "candles/days"
+            # days 엔드포인트는 to 파라미터를 ISO8601 형식(YYYY-MM-DDTHH:MM:SS)으로 사용
+            # 참고: https://api.upbit.com/v1/candles/days?market=KRW-WAXP&count=200&to=2026-01-04T00:00:00
+            if to:
+                # 이미 ISO8601 형식인 경우 그대로 사용
+                # 날짜 형식(YYYY-MM-DD)인 경우 시간을 추가하여 ISO8601 형식으로 변환
+                if "T" in to:
+                    # 이미 ISO8601 형식
+                    params["to"] = to
+                elif " " in to:
+                    # 공백으로 구분된 형식인 경우 T로 변환
+                    params["to"] = to.replace(" ", "T")
+                else:
+                    # 날짜 형식만 있는 경우 시간 추가 (00:00:00)
+                    params["to"] = f"{to}T00:00:00"
+            # days 엔드포인트는 unit 파라미터를 사용하지 않음 (이미 endpoint에 포함됨)
+        else:
+            endpoint = f"candles/minutes/{unit}"
+            params["unit"] = unit
+            if to:
+                params["to"] = to
+        
+        # 디버깅: days 엔드포인트인 경우 요청 정보 출력
+        if unit == 1440:
+            console.print(f"[dim]    [DEBUG] Days 엔드포인트 호출: {endpoint}, params: {params}[/dim]")
+        
         result = self._request_with_retry("GET", endpoint, params)
+        
+        # 디버깅: days 엔드포인트인 경우 결과 확인
+        if unit == 1440:
+            if result:
+                console.print(f"[dim]    [DEBUG] Days 엔드포인트 응답: {len(result)}개 캔들[/dim]")
+            else:
+                console.print(f"[yellow]    [DEBUG] Days 엔드포인트 응답: None 또는 빈 리스트[/yellow]")
+        
         return result if result else []
