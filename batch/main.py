@@ -18,8 +18,8 @@ def main():
     """배치 작업 메인 실행"""
     console.print("[bold cyan]배치 작업 시작[/bold cyan]\n")
     
-    # 1. 데이터 수집 (최근 90일치, 메모리에만 저장)
-    console.print("[bold]1단계: 데이터 수집 (최근 90일치)[/bold]")
+    # 1. 데이터 수집 (최근 120일치, 메모리에만 저장)
+    console.print("[bold]1단계: 데이터 수집 (최근 120일치)[/bold]")
     market_data = fetch_recent_90days(markets=None, timeframes=["4h", "1d"])
     
     if not market_data:

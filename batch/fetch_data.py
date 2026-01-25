@@ -1,4 +1,4 @@
-"""배치용 데이터 수집 (최근 90일치, 메모리에만 저장)
+"""배치용 데이터 수집 (최근 120일치, 메모리에만 저장)
 참조: python -m src.cli fetch-daily
 """
 import pandas as pd
@@ -25,7 +25,7 @@ def fetch_recent_90days(
     timeframes: List[str] = ["4h", "1d"],
 ) -> Dict[str, Dict[str, pd.DataFrame]]:
     """
-    최근 90일치 4h/1d 캔들 수집 (메모리에만 저장)
+    최근 120일치 4h/1d 캔들 수집 (메모리에만 저장)
     참조: python -m src.cli fetch-daily (fetch_1h_incremental 로직 참조)
     
     Args:
@@ -48,10 +48,10 @@ def fetch_recent_90days(
             console.print(f"[red]마켓 목록 조회 실패: {e}[/red]")
             return {}
     
-    # 시간 범위 설정 (최근 90일) - fetch-daily 스타일 참조
+    # 시간 범위 설정 (최근 120일) - 시그널 검증을 위해 103개 이상 필요 (SMI_LOCAL_MIN_WINDOW + 3)
     now_kst = datetime.now()
     end_kst = now_kst
-    start_kst = (now_kst - timedelta(days=90)).replace(hour=0, minute=0, second=0, microsecond=0)
+    start_kst = (now_kst - timedelta(days=120)).replace(hour=0, minute=0, second=0, microsecond=0)
     
     result: Dict[str, Dict[str, pd.DataFrame]] = {}
     
@@ -65,7 +65,7 @@ def fetch_recent_90days(
                 # fetch_timeframe_direct 사용 (참조: fetch-4h-1d-direct)
                 # - 4h: candles/minutes/240 엔드포인트 사용
                 # - 1d: candles/days 엔드포인트 사용 (days endpoint에 맞게 자동 처리됨)
-                # start_kst와 end_kst를 명시적으로 전달하여 최근 90일치만 수집
+                # start_kst와 end_kst를 명시적으로 전달하여 최근 120일치만 수집
                 new_df = fetch_timeframe_direct(market, timeframe, start_kst=start_kst, end_kst=end_kst)
                 
                 if new_df.empty:
@@ -89,7 +89,7 @@ def fetch_recent_90days(
     total_4h_rows = sum(len(m.get("4h", pd.DataFrame())) for m in result.values())
     total_1d_rows = sum(len(m.get("1d", pd.DataFrame())) for m in result.values())
     
-    console.print(f"\n[green]최근 90일치 데이터 수집 완료[/green]")
+    console.print(f"\n[green]최근 120일치 데이터 수집 완료[/green]")
     console.print(f"  4h 데이터: {total_4h}개 마켓, 총 {total_4h_rows:,}개 행")
     console.print(f"  1d 데이터: {total_1d}개 마켓, 총 {total_1d_rows:,}개 행")
     

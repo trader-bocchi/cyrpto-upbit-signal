@@ -153,7 +153,7 @@ python -m src.cli run-signals --timeframes 1d
 ### 진짜 시그널 없는지 리체크하는 코드
 python verify_smi_signals.py
 
-### 최근 90일치 데이터를 가져와서 신호 생성하는 코드 (github action용)
+### 최근 120일치 데이터를 가져와서 신호 생성하는 코드 (github action용)
 python batch/main.py
 
 

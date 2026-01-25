@@ -4,6 +4,7 @@
 """
 import pandas as pd
 from typing import Dict, List, Tuple
+from datetime import datetime, timezone, timedelta
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
@@ -221,7 +222,6 @@ def run_signals_for_timeframe(
             regime_blocked = False
             if BACKTEST_REGIME_ENABLED and not btc_1d_df.empty:
                 from src.backtest.regime_filter import get_regime_status
-                from datetime import datetime
                 signal_time = pd.to_datetime(signal["signal_time_kst"])
                 regime_on = get_regime_status(btc_1d_df, signal_time)
                 
@@ -333,8 +333,8 @@ def run_signals_for_timeframe(
             console.print(f"[cyan]시그널 전송 중... ({len(signals_to_send)}개)[/cyan]")
         
         # 현재 시점 (KST)
-        from datetime import datetime
-        current_time = datetime.now().strftime("%Y년 %m월 %d일 %H시 %M분")
+        kst = timezone(timedelta(hours=9))
+        current_time = datetime.now(kst).strftime("%Y년 %m월 %d일 %H시 %M분")
         
         # 모든 시그널을 하나의 메시지로 묶어서 전송
         if notifier.send_buy_signals_batch(signals_to_send, current_time, total_market_volume):
@@ -393,8 +393,8 @@ def run_signals_for_timeframe(
     
     # 시그널이 없을 때 텔레그램 메시지 전송
     if signal_count == 0:
-        from datetime import datetime
-        date_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        kst = timezone(timedelta(hours=9))
+        date_time = datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S")
         
         if notifier.send_no_signal(date_time, [timeframe]):
             console.print(f"[green]✅ 시그널 없음 메시지 전송: {date_time}[/green]")

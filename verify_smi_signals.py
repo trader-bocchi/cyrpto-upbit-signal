@@ -225,34 +225,60 @@ def main():
     console.print("[cyan]SMI 데이터 검증 시작...[/cyan]")
     
     # 모든 마켓 조회
+    console.print("[cyan]마켓 목록 수집 중...[/cyan]")
     markets = []
     for timeframe in ["4h", "1d"]:
         tf_path = DERIVED_DATA_PATH / "indicators" / f"smi_{timeframe}"
         if tf_path.exists():
-            for market_dir in tf_path.iterdir():
-                if market_dir.is_dir() and market_dir.name.startswith("market="):
-                    market = market_dir.name.replace("market=", "")
-                    if market not in markets:
-                        markets.append(market)
+            try:
+                for market_dir in tf_path.iterdir():
+                    if market_dir.is_dir() and market_dir.name.startswith("market="):
+                        market = market_dir.name.replace("market=", "")
+                        if market not in markets:
+                            markets.append(market)
+            except Exception as e:
+                console.print(f"[red]마켓 목록 수집 중 오류 ({timeframe}): {e}[/red]")
     
     console.print(f"[green]검증 대상: {len(markets)}개 마켓[/green]")
+    
+    if not markets:
+        console.print("[yellow]검증할 마켓이 없습니다.[/yellow]")
+        return
     
     results = []
     negative_last_smi_count = 0
     signal_eligible_count = 0
     
+    # 진행 상황 표시를 위한 카운터
+    total_tasks = len(markets) * 2  # 4h, 1d 각각
+    processed = 0
+    
     for market in markets:
         for timeframe in ["4h", "1d"]:
-            result = verify_signal_condition(market, timeframe)
-            results.append(result)
+            processed += 1
+            console.print(f"[dim][{processed}/{total_tasks}] {market} [{timeframe}] 검증 중...[/dim]")
             
-            if result["last_smi"] is not None and result["last_smi"] < 0:
-                negative_last_smi_count += 1
+            try:
+                result = verify_signal_condition(market, timeframe)
+                results.append(result)
                 
-                if result["signal_eligible"]:
-                    signal_eligible_count += 1
-                    console.print(f"[green]✅ {market} [{timeframe}]: 시그널 조건 만족! (마지막 SMI: {result['last_smi']:.4f})[/green]")
-                    console.print(f"   m[i]={result.get('m_i', 0):.4f}, m[i+1]={result.get('m_i1', 0):.4f}, m[i+2]={result.get('m_i2', 0):.4f}, pivot_idx={result.get('pivot_idx', -1)}")
+                if result["last_smi"] is not None and result["last_smi"] < 0:
+                    negative_last_smi_count += 1
+                    
+                    if result["signal_eligible"]:
+                        signal_eligible_count += 1
+                        console.print(f"[green]✅ {market} [{timeframe}]: 시그널 조건 만족! (마지막 SMI: {result['last_smi']:.4f})[/green]")
+                        console.print(f"   m[i]={result.get('m_i', 0):.4f}, m[i+1]={result.get('m_i1', 0):.4f}, m[i+2]={result.get('m_i2', 0):.4f}, pivot_idx={result.get('pivot_idx', -1)}")
+            except Exception as e:
+                console.print(f"[red]오류 ({market} [{timeframe}]): {e}[/red]")
+                results.append({
+                    "market": market,
+                    "timeframe": timeframe,
+                    "has_data": False,
+                    "last_smi": None,
+                    "signal_eligible": False,
+                    "reason": f"오류: {str(e)}"
+                })
     
     # 결과 요약
     console.print("\n[bold cyan]검증 결과 요약[/bold cyan]")
