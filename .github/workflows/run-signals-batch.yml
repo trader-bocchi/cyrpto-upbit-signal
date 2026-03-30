@@ -2,8 +2,8 @@ name: Run Signals Batch
 
 on:
   schedule:
-    # 매일 한국시간 오후 20시 실행 (UTC 11시 = 한국시간 20시)
-    - cron: '0 11 * * *'
+    # 4시간마다 실행 (UTC 기준) → KST 20시 = UTC 11시 포함
+    - cron: '0 */4 * * *'
   workflow_dispatch:  # 수동 실행 가능
 
 jobs:
