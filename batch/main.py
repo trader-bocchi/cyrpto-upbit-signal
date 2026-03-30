@@ -88,9 +88,9 @@ def main():
         mark_signals_sent(upbit_4h, source_prefix="UPBIT-")
         mark_signals_sent(binance_4h, source_prefix="BINANCE-")
         total_sent += 1
-        console.print("[green]✅ 4h 통합 메시지 전송 완료[/green]")
+        console.print("[green]OK 4h 통합 메시지 전송 완료[/green]")
     else:
-        console.print("[red]❌ 4h 메시지 전송 실패[/red]")
+        console.print("[red]FAIL 4h 메시지 전송 실패[/red]")
 
     # ── 1d 메시지 (KST 20시에만 전송) ────────────────────────────
     if is_kst_20h:
@@ -112,9 +112,9 @@ def main():
             mark_signals_sent(upbit_1d, source_prefix="UPBIT-")
             mark_signals_sent(binance_1d, source_prefix="BINANCE-")
             total_sent += 1
-            console.print("[green]✅ 1d 통합 메시지 전송 완료[/green]")
+            console.print("[green]OK 1d 통합 메시지 전송 완료[/green]")
         else:
-            console.print("[red]❌ 1d 메시지 전송 실패[/red]")
+            console.print("[red]FAIL 1d 메시지 전송 실패[/red]")
 
     console.print(f"\n[bold green]배치 작업 완료 - 총 {total_sent}개 메시지 전송[/bold green]")
 
