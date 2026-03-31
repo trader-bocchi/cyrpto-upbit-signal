@@ -1,5 +1,15 @@
 # Upbit Crypto Signal System
 
+## 모니터링 대상 종목
+
+| 거래소 | 종목 |
+|--------|------|
+| 업비트 | KRW-BTC, KRW-ETH, KRW-SOL, KRW-XRP, KRW-USDT, KRW-USDC |
+| 바이낸스 | BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT |
+
+- 알림 주기: 4시간마다 (GitHub Actions cron, UTC 기준)
+- KST 20시에는 4h + 1d 통합 메시지 전송, 그 외에는 4h 메시지만 전송
+
 
 ## 설치 방법
 
