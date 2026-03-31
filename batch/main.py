@@ -4,8 +4,8 @@
   - KST 20시: 업비트+바이낸스 4h 통합 메시지 + 1d 통합 메시지 (총 2회)
   - 그 외 시간: 업비트+바이낸스 4h 통합 메시지만 (총 1회)
 
-대상 종목: BTC, ETH, SOL, XRP
-  - 업비트: KRW-BTC, KRW-ETH, KRW-SOL, KRW-XRP
+대상 종목: BTC, ETH, SOL, XRP, USDT, USDC
+  - 업비트: KRW-BTC, KRW-ETH, KRW-SOL, KRW-XRP, KRW-USDT, KRW-USDC
   - 바이낸스: BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT
 """
 import sys
@@ -26,7 +26,7 @@ from src.telegram.message_format import format_combined_signals_message
 
 console = Console()
 
-UPBIT_TARGETS = ["KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-XRP"]
+UPBIT_TARGETS = ["KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-XRP", "KRW-USDT", "KRW-USDC"]
 KST = timezone(timedelta(hours=9))
 
 
