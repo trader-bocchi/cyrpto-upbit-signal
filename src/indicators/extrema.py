@@ -60,7 +60,6 @@ def find_pivot_min(
         if len(local_min_indices) == 0:
             continue
         
-        # 최저값 피벗 선택
         pivot_candidates = window_series.loc[local_min_indices]
         
         if require_negative:
@@ -68,9 +67,10 @@ def find_pivot_min(
         
         if len(pivot_candidates) == 0:
             continue
-        
-        pivot_idx = pivot_candidates.idxmin()
-        pivot_value = pivot_candidates.min()
+
+        # 가장 최근 로컬 미니멈을 피벗으로 선택 (가장 깊은 값이 아닌, 가장 최근 발생한 것)
+        pivot_idx = pivot_candidates.index[-1]
+        pivot_value = pivot_candidates.iloc[-1]
         
         result.loc[series.index[i], "pivot_min"] = pivot_value
         result.loc[series.index[i], "pivot_idx"] = series.index.get_loc(pivot_idx)
