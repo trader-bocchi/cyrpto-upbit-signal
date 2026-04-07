@@ -1,8 +1,8 @@
 """배치 작업 메인 실행 스크립트
 
 알림 발송 조건 (KST 기준):
-  - KST 20시: 업비트+바이낸스 4h 통합 메시지 + 1d 통합 메시지 (총 2회)
-  - 그 외 시간: 업비트+바이낸스 4h 통합 메시지만 (총 1회)
+  - 매 4시간: 업비트+바이낸스 4h BUY+SELL 통합 메시지 (1회)
+  - KST 20시 추가: 업비트+바이낸스 1d BUY+SELL 통합 메시지 (1회)
 
 대상 종목: BTC, ETH, SOL, XRP, USDT, USDC
   - 업비트: KRW-BTC, KRW-ETH, KRW-SOL, KRW-XRP, KRW-USDT, KRW-USDC
@@ -27,15 +27,58 @@ from batch.signal_detector import (
     mark_sell_signals_sent,
 )
 from src.telegram.notifier import TelegramNotifier
-from src.telegram.message_format import (
-    format_combined_signals_message,
-    format_combined_sell_signals_message,
-)
+from src.telegram.message_format import format_combined_signals_message
 
 console = Console()
 
 UPBIT_TARGETS = ["KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-XRP", "KRW-USDT", "KRW-USDC"]
 KST = timezone(timedelta(hours=9))
+
+
+def send_signals_for_timeframe(
+    notifier: TelegramNotifier,
+    upbit_smi,
+    binance_smi,
+    timeframe: str,
+    current_time: str,
+) -> int:
+    """
+    특정 시간프레임의 매수+매도 시그널을 하나의 메시지로 감지·전송
+
+    Returns:
+        전송 성공 시 1, 실패 시 0
+    """
+    tf_label = "4h" if timeframe == "4h" else "1d"
+
+    console.print(f"\n[cyan]▶ {tf_label} 매수 시그널 감지...[/cyan]")
+    upbit_buy = detect_signals(upbit_smi, timeframe, source_prefix="UPBIT-")
+    binance_buy = detect_signals(binance_smi, timeframe, source_prefix="BINANCE-")
+    console.print(f"  Upbit {tf_label} 매수: {len(upbit_buy)}개 / Binance {tf_label} 매수: {len(binance_buy)}개")
+
+    console.print(f"[cyan]▶ {tf_label} 매도 시그널 감지...[/cyan]")
+    upbit_sell = detect_sell_signals(upbit_smi, timeframe, source_prefix="UPBIT-")
+    binance_sell = detect_sell_signals(binance_smi, timeframe, source_prefix="BINANCE-")
+    console.print(f"  Upbit {tf_label} 매도: {len(upbit_sell)}개 / Binance {tf_label} 매도: {len(binance_sell)}개")
+
+    msg = format_combined_signals_message(
+        upbit_buy=upbit_buy,
+        binance_buy=binance_buy,
+        upbit_sell=upbit_sell,
+        binance_sell=binance_sell,
+        timeframe=timeframe,
+        current_time=current_time,
+    )
+
+    if notifier.send_message(msg):
+        mark_signals_sent(upbit_buy, source_prefix="UPBIT-")
+        mark_signals_sent(binance_buy, source_prefix="BINANCE-")
+        mark_sell_signals_sent(upbit_sell, source_prefix="UPBIT-")
+        mark_sell_signals_sent(binance_sell, source_prefix="BINANCE-")
+        console.print(f"[green]OK {tf_label} 통합 메시지 전송 완료[/green]")
+        return 1
+    else:
+        console.print(f"[red]FAIL {tf_label} 메시지 전송 실패[/red]")
+        return 0
 
 
 def main():
@@ -77,100 +120,12 @@ def main():
     notifier = TelegramNotifier()
     total_sent = 0
 
-    # ── 4h 매수 시그널 (항상 전송) ────────────────────────────────
-    console.print("\n[cyan]▶ 4h 매수 시그널 감지...[/cyan]")
-    upbit_4h = detect_signals(upbit_smi, "4h", source_prefix="UPBIT-")
-    binance_4h = detect_signals(binance_smi, "4h", source_prefix="BINANCE-")
+    # 4h: 항상 전송
+    total_sent += send_signals_for_timeframe(notifier, upbit_smi, binance_smi, "4h", current_time)
 
-    console.print(
-        f"  Upbit 4h 매수: {len(upbit_4h)}개 / Binance 4h 매수: {len(binance_4h)}개 시그널"
-    )
-
-    msg_4h = format_combined_signals_message(
-        upbit_signals=upbit_4h,
-        binance_signals=binance_4h,
-        timeframe="4h",
-        current_time=current_time,
-    )
-    if notifier.send_message(msg_4h):
-        mark_signals_sent(upbit_4h, source_prefix="UPBIT-")
-        mark_signals_sent(binance_4h, source_prefix="BINANCE-")
-        total_sent += 1
-        console.print("[green]OK 4h 매수 통합 메시지 전송 완료[/green]")
-    else:
-        console.print("[red]FAIL 4h 매수 메시지 전송 실패[/red]")
-
-    # ── 4h 매도 시그널 (항상 감지, 있을 때만 전송) ────────────────
-    console.print("\n[cyan]▶ 4h 매도 시그널 감지...[/cyan]")
-    upbit_4h_sell = detect_sell_signals(upbit_smi, "4h", source_prefix="UPBIT-")
-    binance_4h_sell = detect_sell_signals(binance_smi, "4h", source_prefix="BINANCE-")
-
-    console.print(
-        f"  Upbit 4h 매도: {len(upbit_4h_sell)}개 / Binance 4h 매도: {len(binance_4h_sell)}개 시그널"
-    )
-
-    if upbit_4h_sell or binance_4h_sell:
-        msg_4h_sell = format_combined_sell_signals_message(
-            upbit_signals=upbit_4h_sell,
-            binance_signals=binance_4h_sell,
-            timeframe="4h",
-            current_time=current_time,
-        )
-        if notifier.send_message(msg_4h_sell):
-            mark_sell_signals_sent(upbit_4h_sell, source_prefix="UPBIT-")
-            mark_sell_signals_sent(binance_4h_sell, source_prefix="BINANCE-")
-            total_sent += 1
-            console.print("[green]OK 4h 매도 통합 메시지 전송 완료[/green]")
-        else:
-            console.print("[red]FAIL 4h 매도 메시지 전송 실패[/red]")
-
-    # ── 1d 메시지 (KST 20시에만 전송) ────────────────────────────
+    # 1d: KST 20시에만 전송
     if is_kst_20h:
-        console.print("\n[cyan]▶ 1d 매수 시그널 감지...[/cyan]")
-        upbit_1d = detect_signals(upbit_smi, "1d", source_prefix="UPBIT-")
-        binance_1d = detect_signals(binance_smi, "1d", source_prefix="BINANCE-")
-
-        console.print(
-            f"  Upbit 1d 매수: {len(upbit_1d)}개 / Binance 1d 매수: {len(binance_1d)}개 시그널"
-        )
-
-        msg_1d = format_combined_signals_message(
-            upbit_signals=upbit_1d,
-            binance_signals=binance_1d,
-            timeframe="1d",
-            current_time=current_time,
-        )
-        if notifier.send_message(msg_1d):
-            mark_signals_sent(upbit_1d, source_prefix="UPBIT-")
-            mark_signals_sent(binance_1d, source_prefix="BINANCE-")
-            total_sent += 1
-            console.print("[green]OK 1d 매수 통합 메시지 전송 완료[/green]")
-        else:
-            console.print("[red]FAIL 1d 매수 메시지 전송 실패[/red]")
-
-        # ── 1d 매도 시그널 (KST 20시에만, 있을 때만 전송) ──────────
-        console.print("\n[cyan]▶ 1d 매도 시그널 감지...[/cyan]")
-        upbit_1d_sell = detect_sell_signals(upbit_smi, "1d", source_prefix="UPBIT-")
-        binance_1d_sell = detect_sell_signals(binance_smi, "1d", source_prefix="BINANCE-")
-
-        console.print(
-            f"  Upbit 1d 매도: {len(upbit_1d_sell)}개 / Binance 1d 매도: {len(binance_1d_sell)}개 시그널"
-        )
-
-        if upbit_1d_sell or binance_1d_sell:
-            msg_1d_sell = format_combined_sell_signals_message(
-                upbit_signals=upbit_1d_sell,
-                binance_signals=binance_1d_sell,
-                timeframe="1d",
-                current_time=current_time,
-            )
-            if notifier.send_message(msg_1d_sell):
-                mark_sell_signals_sent(upbit_1d_sell, source_prefix="UPBIT-")
-                mark_sell_signals_sent(binance_1d_sell, source_prefix="BINANCE-")
-                total_sent += 1
-                console.print("[green]OK 1d 매도 통합 메시지 전송 완료[/green]")
-            else:
-                console.print("[red]FAIL 1d 매도 메시지 전송 실패[/red]")
+        total_sent += send_signals_for_timeframe(notifier, upbit_smi, binance_smi, "1d", current_time)
 
     console.print(f"\n[bold green]배치 작업 완료 - 총 {total_sent}개 메시지 전송[/bold green]")
 
