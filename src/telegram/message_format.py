@@ -310,6 +310,57 @@ def format_combined_signals_message(
     return msg
 
 
+def format_combined_sell_signals_message(
+    upbit_signals: List[Tuple[str, Dict]],
+    binance_signals: List[Tuple[str, Dict]],
+    timeframe: str,
+    current_time: Optional[str] = None,
+) -> str:
+    """
+    업비트 + 바이낸스 매도 시그널을 출처별 헤더와 함께 하나의 메시지로 포맷팅
+    (format_combined_signals_message의 매도 버전)
+
+    Args:
+        upbit_signals: [(market, signal_dict), ...] 업비트 매도 시그널 목록
+        binance_signals: [(market, signal_dict), ...] 바이낸스 매도 시그널 목록
+        timeframe: 시간프레임 ("4h" 또는 "1d")
+        current_time: 현재 시점 문자열
+
+    Returns:
+        포맷팅된 HTML 메시지
+    """
+    tf_upper = timeframe.upper()
+    tf_display = "4시간" if timeframe == "4h" else "1일"
+
+    msg = ""
+    if current_time:
+        msg += f"⏰ <b>시그널 시점:</b> {escape_html(current_time)}\n"
+    msg += f"📊 <b>캔들 기준:</b> {tf_display} 캔들\n\n"
+    msg += f"🔴 <b>SELL SIGNAL</b>\n\n"
+
+    # 업비트 섹션
+    msg += f"📊 <b>Upbit {tf_upper}</b>\n"
+    if upbit_signals:
+        for market, signal in upbit_signals:
+            close = signal.get("close", 0)
+            msg += f"• <b>{escape_html(market)}</b>  {close:,.0f} KRW\n"
+    else:
+        msg += "• 시그널 없음\n"
+
+    msg += "\n"
+
+    # 바이낸스 섹션
+    msg += f"📊 <b>Binance {tf_upper}</b>\n"
+    if binance_signals:
+        for market, signal in binance_signals:
+            close = signal.get("close", 0)
+            msg += f"• <b>{escape_html(market)}</b>  ${close:,.4f}\n"
+    else:
+        msg += "• 시그널 없음\n"
+
+    return msg
+
+
 def format_no_signal_message(
     date_str: str,
     timeframes: List[str],

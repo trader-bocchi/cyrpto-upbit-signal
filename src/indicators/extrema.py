@@ -3,6 +3,81 @@ import pandas as pd
 import numpy as np
 
 
+def find_local_maxima(series: pd.Series, window: int = 1) -> pd.Series:
+    """
+    로컬 맥시멈 찾기
+
+    Args:
+        series: 입력 시리즈
+        window: 주변 확인 범위
+
+    Returns:
+        로컬 맥시멈인지 여부를 나타내는 boolean Series
+    """
+    is_local_max = pd.Series(False, index=series.index)
+
+    for i in range(window, len(series) - window):
+        if series.iloc[i] > series.iloc[i - window] and series.iloc[i] > series.iloc[i + window]:
+            is_local_max.iloc[i] = True
+
+    return is_local_max
+
+
+def find_pivot_max(
+    series: pd.Series,
+    window: int = 100,
+    require_positive: bool = True,
+) -> pd.DataFrame:
+    """
+    최근 window 내에서 가장 최근 로컬 맥시멈(피벗) 찾기
+
+    Args:
+        series: 입력 시리즈 (예: SMI momentum)
+        window: 확인할 윈도우 크기
+        require_positive: 피벗이 양수여야 하는지 여부
+
+    Returns:
+        각 인덱스별 피벗 정보 DataFrame
+        - pivot_max: 피벗 값
+        - pivot_max_idx: 피벗 인덱스
+        - is_pivot_max: 피벗인지 여부
+    """
+    result = pd.DataFrame(index=series.index)
+    result["pivot_max"] = np.nan
+    result["pivot_max_idx"] = -1
+    result["is_pivot_max"] = False
+
+    local_maxs = find_local_maxima(series, window=1)
+
+    for i in range(window, len(series)):
+        window_start = max(0, i - window)
+        window_series = series.iloc[window_start:i + 1]
+        window_local_maxs = local_maxs.iloc[window_start:i + 1]
+
+        local_max_indices = window_series[window_local_maxs].index
+
+        if len(local_max_indices) == 0:
+            continue
+
+        pivot_candidates = window_series.loc[local_max_indices]
+
+        if require_positive:
+            pivot_candidates = pivot_candidates[pivot_candidates > 0]
+
+        if len(pivot_candidates) == 0:
+            continue
+
+        # 가장 최근 로컬 맥시멈을 피벗으로 선택
+        pivot_idx = pivot_candidates.index[-1]
+        pivot_value = pivot_candidates.iloc[-1]
+
+        result.loc[series.index[i], "pivot_max"] = pivot_value
+        result.loc[series.index[i], "pivot_max_idx"] = series.index.get_loc(pivot_idx)
+        result.loc[series.index[i], "is_pivot_max"] = (series.index[i] == pivot_idx)
+
+    return result
+
+
 def find_local_minima(series: pd.Series, window: int = 1) -> pd.Series:
     """
     로컬 미니멈 찾기

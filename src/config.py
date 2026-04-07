@@ -38,6 +38,7 @@ SMI_KC_LENGTH = int(os.getenv("SMI_KC_LENGTH", "20"))
 SMI_KC_MULT = float(os.getenv("SMI_KC_MULT", "1.5"))
 SMI_LOCAL_MIN_WINDOW = int(os.getenv("SMI_LOCAL_MIN_WINDOW", "100"))
 SMI_REQUIRE_NEGATIVE_PIVOT = os.getenv("SMI_REQUIRE_NEGATIVE_PIVOT", "true").lower() == "true"
+SMI_REQUIRE_POSITIVE_PIVOT = os.getenv("SMI_REQUIRE_POSITIVE_PIVOT", "true").lower() == "true"
 
 # 이동평균 파라미터
 MA_SMA50 = int(os.getenv("MA_SMA50", "50"))
