@@ -12,7 +12,9 @@
   2) 최고 로컬 맥시멈(pivot)이 현재 바 기준 정확히 2칸 전(i-2)
   3) m[i-2] > m[i-1] > m[i] 연속 하락 (파동 고점에서 2단계 하락)
   4) SMI_REQUIRE_POSITIVE_PIVOT=True 이면 pivot 값이 양수여야 함
-  5) SIGNAL_ENABLE_SMA50_FILTER=True 이면 close < SMA50 조건 필요
+  ※ SMA50 필터 없음 — 매도 시그널은 SMI 패턴만으로 판단
+
+공통: 마지막 2개 봉(i, i-1) 체크 — Upbit(KST)/Binance(UTC) 캔들 경계 차이 보정
 """
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
@@ -35,6 +37,10 @@ def check_smi_signal(df: pd.DataFrame, timeframe: str) -> Optional[Dict]:
     """
     단일 마켓 DataFrame에서 SMI 시그널 감지
 
+    마지막 2개 봉(i, i-1)을 체크한다.
+    Upbit(KST 기준)과 Binance(UTC 기준)의 4h 캔들 경계가 최대 4시간 어긋나,
+    배치 실행 시점에 따라 신호 봉이 마지막 봉이 아닌 직전 봉에 위치할 수 있다.
+
     Returns:
         시그널 딕셔너리 또는 None (시그널 없음)
     """
@@ -44,7 +50,7 @@ def check_smi_signal(df: pd.DataFrame, timeframe: str) -> Optional[Dict]:
     df_sorted = df.sort_values("candle_time_kst", ascending=True).reset_index(drop=True)
 
     smi_values = df_sorted["smi_momentum"].dropna()
-    if smi_values.empty or smi_values.iloc[-1] >= 0:
+    if smi_values.empty:
         return None
 
     if len(df_sorted) < SMI_LOCAL_MIN_WINDOW + 3:
@@ -58,49 +64,57 @@ def check_smi_signal(df: pd.DataFrame, timeframe: str) -> Optional[Dict]:
     )
     merged_df = pd.concat([merged_df, pivot_info], axis=1)
 
-    i = len(merged_df) - 1
-    m_i2 = merged_df.iloc[i]["smi_momentum"]
-    if pd.isna(m_i2):
-        return None
+    last_idx = len(merged_df) - 1
 
-    # 피벗(로컬 미니멈)이 정확히 2칸 전이어야 함
-    pivot_idx_loc = int(merged_df.iloc[i]["pivot_idx"])
-    if pivot_idx_loc < 0 or pivot_idx_loc != i - 2:
-        return None
+    # 마지막 봉(i)과 직전 봉(i-1) 순서로 체크 — 가장 최근 시그널 우선
+    for i in [last_idx, last_idx - 1]:
+        if i < SMI_LOCAL_MIN_WINDOW + 2:
+            continue
 
-    m_i = merged_df.iloc[pivot_idx_loc]["smi_momentum"]
-    m_i1 = merged_df.iloc[pivot_idx_loc + 1]["smi_momentum"]
+        m_i2 = merged_df.iloc[i]["smi_momentum"]
+        if pd.isna(m_i2) or m_i2 >= 0:
+            continue
 
-    if pd.isna(m_i) or pd.isna(m_i1):
-        return None
-    # 연속 상승 조건: 피벗 → 피벗+1 → 현재 (모두 증가)
-    if not (m_i2 > m_i1 > m_i):
-        return None
-    if SMI_REQUIRE_NEGATIVE_PIVOT and m_i >= 0:
-        return None
+        # 피벗(로컬 미니멈)이 정확히 2칸 전이어야 함
+        pivot_idx_loc = int(merged_df.iloc[i]["pivot_idx"])
+        if pivot_idx_loc < 0 or pivot_idx_loc != i - 2:
+            continue
 
-    signal_row = merged_df.iloc[i]
+        m_i = merged_df.iloc[pivot_idx_loc]["smi_momentum"]
+        m_i1 = merged_df.iloc[pivot_idx_loc + 1]["smi_momentum"]
 
-    if SIGNAL_ENABLE_SMA50_FILTER:
-        if pd.isna(signal_row["sma_50"]) or signal_row["close"] <= signal_row["sma_50"]:
-            return None
+        if pd.isna(m_i) or pd.isna(m_i1):
+            continue
+        # 연속 상승 조건: 피벗 → 피벗+1 → 현재 (모두 증가)
+        if not (m_i2 > m_i1 > m_i):
+            continue
+        if SMI_REQUIRE_NEGATIVE_PIVOT and m_i >= 0:
+            continue
 
-    return {
-        "timeframe": timeframe,
-        "signal_time_kst": str(signal_row["candle_time_kst"]),
-        "side": "BUY",
-        "close": float(signal_row["close"]),
-        "smi_pivot_min": float(m_i),
-        "smi_m_i": float(m_i),
-        "smi_m_i1": float(m_i1),
-        "smi_m_i2": float(m_i2),
-        "sma50": float(signal_row["sma_50"]) if not pd.isna(signal_row["sma_50"]) else None,
-        "sma200": float(signal_row["sma_200"]) if not pd.isna(signal_row["sma_200"]) else None,
-        "sma200_above": (
-            bool(signal_row["close"] > signal_row["sma_200"])
-            if not pd.isna(signal_row["sma_200"]) else None
-        ),
-    }
+        signal_row = merged_df.iloc[i]
+
+        if SIGNAL_ENABLE_SMA50_FILTER:
+            if pd.isna(signal_row["sma_50"]) or signal_row["close"] <= signal_row["sma_50"]:
+                continue
+
+        return {
+            "timeframe": timeframe,
+            "signal_time_kst": str(signal_row["candle_time_kst"]),
+            "side": "BUY",
+            "close": float(signal_row["close"]),
+            "smi_pivot_min": float(m_i),
+            "smi_m_i": float(m_i),
+            "smi_m_i1": float(m_i1),
+            "smi_m_i2": float(m_i2),
+            "sma50": float(signal_row["sma_50"]) if not pd.isna(signal_row["sma_50"]) else None,
+            "sma200": float(signal_row["sma_200"]) if not pd.isna(signal_row["sma_200"]) else None,
+            "sma200_above": (
+                bool(signal_row["close"] > signal_row["sma_200"])
+                if not pd.isna(signal_row["sma_200"]) else None
+            ),
+        }
+
+    return None
 
 
 def detect_signals(
@@ -162,6 +176,9 @@ def check_smi_sell_signal(df: pd.DataFrame, timeframe: str) -> Optional[Dict]:
     """
     단일 마켓 DataFrame에서 SMI 매도 시그널 감지 (매수의 정반대 로직)
 
+    마지막 2개 봉(i, i-1)을 체크한다.
+    SMA50 필터 없음 — 매도 시그널은 SMI 패턴만으로 판단.
+
     Returns:
         시그널 딕셔너리 또는 None (시그널 없음)
     """
@@ -171,8 +188,7 @@ def check_smi_sell_signal(df: pd.DataFrame, timeframe: str) -> Optional[Dict]:
     df_sorted = df.sort_values("candle_time_kst", ascending=True).reset_index(drop=True)
 
     smi_values = df_sorted["smi_momentum"].dropna()
-    # 마지막 SMI 값이 양수여야 함 (매수의 음수와 반대)
-    if smi_values.empty or smi_values.iloc[-1] <= 0:
+    if smi_values.empty:
         return None
 
     if len(df_sorted) < SMI_LOCAL_MIN_WINDOW + 3:
@@ -186,50 +202,54 @@ def check_smi_sell_signal(df: pd.DataFrame, timeframe: str) -> Optional[Dict]:
     )
     merged_df = pd.concat([merged_df, pivot_info], axis=1)
 
-    i = len(merged_df) - 1
-    m_i2 = merged_df.iloc[i]["smi_momentum"]
-    if pd.isna(m_i2):
-        return None
+    last_idx = len(merged_df) - 1
 
-    # 피벗(로컬 맥시멈)이 정확히 2칸 전이어야 함
-    pivot_idx_loc = int(merged_df.iloc[i]["pivot_max_idx"])
-    if pivot_idx_loc < 0 or pivot_idx_loc != i - 2:
-        return None
+    # 마지막 봉(i)과 직전 봉(i-1) 순서로 체크 — 가장 최근 시그널 우선
+    for i in [last_idx, last_idx - 1]:
+        if i < SMI_LOCAL_MIN_WINDOW + 2:
+            continue
 
-    m_i = merged_df.iloc[pivot_idx_loc]["smi_momentum"]
-    m_i1 = merged_df.iloc[pivot_idx_loc + 1]["smi_momentum"]
+        m_i2 = merged_df.iloc[i]["smi_momentum"]
+        # 마지막 SMI 값이 양수여야 함 (매수의 음수와 반대)
+        if pd.isna(m_i2) or m_i2 <= 0:
+            continue
 
-    if pd.isna(m_i) or pd.isna(m_i1):
-        return None
-    # 연속 하락 조건: 피벗 → 피벗+1 → 현재 (모두 감소) — 매수의 연속 상승과 반대
-    if not (m_i2 < m_i1 < m_i):
-        return None
-    if SMI_REQUIRE_POSITIVE_PIVOT and m_i <= 0:
-        return None
+        # 피벗(로컬 맥시멈)이 정확히 2칸 전이어야 함
+        pivot_idx_loc = int(merged_df.iloc[i]["pivot_max_idx"])
+        if pivot_idx_loc < 0 or pivot_idx_loc != i - 2:
+            continue
 
-    signal_row = merged_df.iloc[i]
+        m_i = merged_df.iloc[pivot_idx_loc]["smi_momentum"]
+        m_i1 = merged_df.iloc[pivot_idx_loc + 1]["smi_momentum"]
 
-    # SMA50 필터 (매수의 반대: close < SMA50)
-    if SIGNAL_ENABLE_SMA50_FILTER:
-        if pd.isna(signal_row["sma_50"]) or signal_row["close"] >= signal_row["sma_50"]:
-            return None
+        if pd.isna(m_i) or pd.isna(m_i1):
+            continue
+        # 연속 하락 조건: 피벗 → 피벗+1 → 현재 (모두 감소) — 매수의 연속 상승과 반대
+        if not (m_i2 < m_i1 < m_i):
+            continue
+        if SMI_REQUIRE_POSITIVE_PIVOT and m_i <= 0:
+            continue
 
-    return {
-        "timeframe": timeframe,
-        "signal_time_kst": str(signal_row["candle_time_kst"]),
-        "side": "SELL",
-        "close": float(signal_row["close"]),
-        "smi_pivot_max": float(m_i),
-        "smi_m_i": float(m_i),
-        "smi_m_i1": float(m_i1),
-        "smi_m_i2": float(m_i2),
-        "sma50": float(signal_row["sma_50"]) if not pd.isna(signal_row["sma_50"]) else None,
-        "sma200": float(signal_row["sma_200"]) if not pd.isna(signal_row["sma_200"]) else None,
-        "sma200_above": (
-            bool(signal_row["close"] > signal_row["sma_200"])
-            if not pd.isna(signal_row["sma_200"]) else None
-        ),
-    }
+        signal_row = merged_df.iloc[i]
+
+        return {
+            "timeframe": timeframe,
+            "signal_time_kst": str(signal_row["candle_time_kst"]),
+            "side": "SELL",
+            "close": float(signal_row["close"]),
+            "smi_pivot_max": float(m_i),
+            "smi_m_i": float(m_i),
+            "smi_m_i1": float(m_i1),
+            "smi_m_i2": float(m_i2),
+            "sma50": float(signal_row["sma_50"]) if not pd.isna(signal_row["sma_50"]) else None,
+            "sma200": float(signal_row["sma_200"]) if not pd.isna(signal_row["sma_200"]) else None,
+            "sma200_above": (
+                bool(signal_row["close"] > signal_row["sma_200"])
+                if not pd.isna(signal_row["sma_200"]) else None
+            ),
+        }
+
+    return None
 
 
 def detect_sell_signals(
