@@ -9,8 +9,11 @@ env/
 ENV/
 .venv
 
-# Data
-data/
+# Data (raw/derived는 제외, meta의 dedup 파일만 추적)
+data/*
+!data/meta/
+data/meta/*
+!data/meta/sent_signals.jsonl
 results/
 
 # Environment
