@@ -4,8 +4,8 @@
   - 매 4시간: 업비트+바이낸스 4h BUY+SELL 통합 메시지 (1회)
   - KST 20시 추가: 업비트+바이낸스 1d BUY+SELL 통합 메시지 (1회)
 
-대상 종목: BTC, ETH, SOL, XRP, USDT, USDC
-  - 업비트: KRW-BTC, KRW-ETH, KRW-SOL, KRW-XRP, KRW-USDT, KRW-USDC
+대상 종목: BTC, ETH, SOL, XRP
+  - 업비트: KRW-BTC, KRW-ETH, KRW-SOL, KRW-XRP
   - 바이낸스: BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT
 """
 import sys
@@ -31,7 +31,7 @@ from src.telegram.message_format import format_combined_signals_message
 
 console = Console()
 
-UPBIT_TARGETS = ["KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-XRP", "KRW-USDT", "KRW-USDC"]
+UPBIT_TARGETS = ["KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-XRP"]
 KST = timezone(timedelta(hours=9))
 
 
@@ -102,6 +102,18 @@ def main():
 
     console.print("[cyan]▶ Binance 데이터 수집...[/cyan]")
     binance_data = fetch_binance_data(symbols=BINANCE_TARGETS, timeframes=timeframes)
+
+    # 바이낸스 수집 결과 검증 (GitHub Actions에서 지역 차단 등으로 실패 가능)
+    binance_ok = any(
+        not df.empty
+        for tf_data in binance_data.values()
+        for df in tf_data.values()
+    )
+    if not binance_ok:
+        console.print(
+            "[bold red]⚠ 바이낸스 데이터 수집 전체 실패 — "
+            "GitHub Actions IP 차단 가능성. Binance 시그널은 이번 배치에서 제외됩니다.[/bold red]"
+        )
 
     if not upbit_data and not binance_data:
         console.print("[red]데이터 수집 실패. 배치 작업을 종료합니다.[/red]")
