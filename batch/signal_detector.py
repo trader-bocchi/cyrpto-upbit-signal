@@ -1,21 +1,27 @@
-"""SMI 시그널 감지 로직 (업비트/바이낸스 공통)
+"""SMI 시그널 감지 로직 (업비트)
 
 매수 시그널 조건 (Squeeze Momentum Index 기반):
   1) 마지막 SMI 값이 음수 (하강 구간에서 회복 중)
-  2) 최저 로컬 미니멈(pivot)이 현재 바 기준 정확히 2칸 전(i-2)
-  3) m[i-2] < m[i-1] < m[i] 연속 상승 (파동 저점에서 2단계 회복)
+  2) 최근 로컬 미니멈(pivot)이 현재 바 기준 정확히 2칸 전(i-2)
+  3) m[i-2] < m[i-1] < m[i] 연속 상승 (로컬미니멈 이후 2캔들 회복 확인)
   4) SMI_REQUIRE_NEGATIVE_PIVOT=True 이면 pivot 값이 음수여야 함
-  5) SIGNAL_ENABLE_SMA50_FILTER=True 이면 close > SMA50 조건 필요
 
 매도 시그널 조건 (매수의 정반대):
   1) 마지막 SMI 값이 양수 (상승 구간에서 하락 시작)
-  2) 최고 로컬 맥시멈(pivot)이 현재 바 기준 정확히 2칸 전(i-2)
-  3) m[i-2] > m[i-1] > m[i] 연속 하락 (파동 고점에서 2단계 하락)
+  2) 최근 로컬 맥시멈(pivot)이 현재 바 기준 정확히 2칸 전(i-2)
+  3) m[i-2] > m[i-1] > m[i] 연속 하락 (로컬맥시멈 이후 2캔들 하락 확인)
   4) SMI_REQUIRE_POSITIVE_PIVOT=True 이면 pivot 값이 양수여야 함
-  ※ SMA50 필터 없음 — 매도 시그널은 SMI 패턴만으로 판단
 
-공통: 마지막 2개 봉(i, i-1) 체크 — Upbit(KST)/Binance(UTC) 캔들 경계 차이 보정
+공통: 마지막 3개 봉(i, i-1, i-2) 체크 — 미완성 캔들 및 배치 타이밍 오차 보정
+
+시그널 강도(매수 확신도):
+  스퀴즈 릴리즈 봉(squeeze_on True→False) 대비 현재까지 모먼텀 변화량을
+  스퀴즈 온 기간의 평균 봉 간 변화량과 비교
+  - STRONG: 3배 이상 — 강한 브레이크아웃
+  - MODERATE: 1.5배 이상 — 보통 수준
+  - NORMAL: 기준 이하
 """
+import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
 from rich.console import Console
@@ -27,19 +33,90 @@ from src.config import (
     SMI_LOCAL_MIN_WINDOW,
     SMI_REQUIRE_NEGATIVE_PIVOT,
     SMI_REQUIRE_POSITIVE_PIVOT,
-    SIGNAL_ENABLE_SMA50_FILTER,
 )
 
 console = Console()
 
+_STRENGTH_THRESHOLDS = {"STRONG": 3.0, "MODERATE": 1.5}
+
+
+def calculate_signal_strength(df: pd.DataFrame, signal_idx: int) -> Dict:
+    """
+    매수 시그널 강도(확신도) 계산
+
+    직전 스퀴즈 릴리즈 봉(squeeze_on True→False 전환점)부터 현재 시그널 봉까지의
+    모먼텀 변화량을, 스퀴즈 온 기간 동안의 봉 간 평균 변화량으로 나눠 강도 산정.
+    """
+    if "smi_momentum" not in df.columns:
+        return {"strength": "NORMAL", "strength_score": 0.0}
+
+    smi = df["smi_momentum"].values
+    has_squeeze = "squeeze_on" in df.columns
+    squeeze_on = df["squeeze_on"].values if has_squeeze else np.zeros(len(df), dtype=bool)
+
+    current_smi = float(smi[signal_idx])
+    if np.isnan(current_smi):
+        return {"strength": "NORMAL", "strength_score": 0.0}
+
+    squeeze_release_idx = None
+    search_start = signal_idx - 1
+    for j in range(search_start, max(0, signal_idx - 120), -1):
+        if squeeze_on[j]:
+            squeeze_release_idx = min(j + 1, signal_idx)
+            break
+
+    if squeeze_release_idx is None or squeeze_release_idx >= signal_idx:
+        return {"strength": "NORMAL", "strength_score": 0.0}
+
+    release_smi = float(smi[squeeze_release_idx])
+    if np.isnan(release_smi):
+        return {"strength": "NORMAL", "strength_score": 0.0}
+
+    current_delta = abs(current_smi - release_smi)
+
+    pre_deltas: List[float] = []
+    for j in range(squeeze_release_idx - 1, max(0, squeeze_release_idx - 60), -1):
+        if not squeeze_on[j]:
+            break
+        if j > 0 and not np.isnan(smi[j]) and not np.isnan(smi[j - 1]):
+            pre_deltas.append(abs(float(smi[j]) - float(smi[j - 1])))
+
+    if not pre_deltas:
+        for j in range(squeeze_release_idx - 1, max(0, squeeze_release_idx - 20), -1):
+            if j > 0 and not np.isnan(smi[j]) and not np.isnan(smi[j - 1]):
+                pre_deltas.append(abs(float(smi[j]) - float(smi[j - 1])))
+
+    if not pre_deltas:
+        return {"strength": "NORMAL", "strength_score": 0.0}
+
+    avg_pre_delta = float(np.mean(pre_deltas))
+    if avg_pre_delta < 1e-8:
+        return {"strength": "NORMAL", "strength_score": 0.0}
+
+    strength_score = current_delta / avg_pre_delta
+
+    if strength_score >= _STRENGTH_THRESHOLDS["STRONG"]:
+        strength = "STRONG"
+    elif strength_score >= _STRENGTH_THRESHOLDS["MODERATE"]:
+        strength = "MODERATE"
+    else:
+        strength = "NORMAL"
+
+    return {
+        "strength": strength,
+        "strength_score": round(strength_score, 2),
+        "squeeze_release_smi": round(release_smi, 4),
+        "current_delta": round(current_delta, 4),
+        "avg_pre_delta": round(avg_pre_delta, 4),
+    }
+
 
 def check_smi_signal(df: pd.DataFrame, timeframe: str) -> Optional[Dict]:
     """
-    단일 마켓 DataFrame에서 SMI 시그널 감지
+    단일 마켓 DataFrame에서 SMI 매수 시그널 감지
 
-    마지막 2개 봉(i, i-1)을 체크한다.
-    Upbit(KST 기준)과 Binance(UTC 기준)의 4h 캔들 경계가 최대 4시간 어긋나,
-    배치 실행 시점에 따라 신호 봉이 마지막 봉이 아닌 직전 봉에 위치할 수 있다.
+    로컬미니멈 이후 2캔들 연속 상승 패턴을 감지한다.
+    마지막 3개 봉을 체크하여 미완성 캔들 및 배치 타이밍 오차를 보정.
 
     Returns:
         시그널 딕셔너리 또는 None (시그널 없음)
@@ -66,8 +143,8 @@ def check_smi_signal(df: pd.DataFrame, timeframe: str) -> Optional[Dict]:
 
     last_idx = len(merged_df) - 1
 
-    # 마지막 봉(i)과 직전 봉(i-1) 순서로 체크 — 가장 최근 시그널 우선
-    for i in [last_idx, last_idx - 1]:
+    # 마지막 3개 봉 체크 (미완성 캔들 + 배치 타이밍 오차 대응)
+    for i in [last_idx, last_idx - 1, last_idx - 2]:
         if i < SMI_LOCAL_MIN_WINDOW + 2:
             continue
 
@@ -93,10 +170,7 @@ def check_smi_signal(df: pd.DataFrame, timeframe: str) -> Optional[Dict]:
 
         signal_row = merged_df.iloc[i]
 
-        if SIGNAL_ENABLE_SMA50_FILTER:
-            if pd.isna(signal_row["sma_50"]) or signal_row["close"] <= signal_row["sma_50"]:
-                continue
-
+        strength_info = calculate_signal_strength(merged_df, i)
         return {
             "timeframe": timeframe,
             "signal_time_kst": str(signal_row["candle_time_kst"]),
@@ -112,6 +186,7 @@ def check_smi_signal(df: pd.DataFrame, timeframe: str) -> Optional[Dict]:
                 bool(signal_row["close"] > signal_row["sma_200"])
                 if not pd.isna(signal_row["sma_200"]) else None
             ),
+            **strength_info,
         }
 
     return None
@@ -123,12 +198,7 @@ def detect_signals(
     source_prefix: str = "",
 ) -> List[Tuple[str, Dict]]:
     """
-    마켓 데이터에서 SMI 시그널 감지 및 중복 체크
-
-    Args:
-        market_data: {market: {timeframe: DataFrame}} (SMI 계산 완료)
-        timeframe: 확인할 시간프레임
-        source_prefix: 중복 체크용 prefix (예: "UPBIT-", "BINANCE-")
+    마켓 데이터에서 SMI 매수 시그널 감지 및 중복 체크
 
     Returns:
         [(market, signal_dict), ...] - 시그널 발생 마켓 리스트
@@ -155,7 +225,7 @@ def detect_signals(
             console.print(f"[yellow]  {dedup_key} {timeframe}: 중복 시그널 스킵[/yellow]")
             continue
 
-        console.print(f"[green]  ✅ 시그널 발생: {market} [{timeframe}][/green]")
+        console.print(f"[green]  BUY 시그널: {market} [{timeframe}][/green]")
         results.append((market, signal))
 
     return results
@@ -174,10 +244,10 @@ def mark_signals_sent(signals: List[Tuple[str, Dict]], source_prefix: str = "") 
 
 def check_smi_sell_signal(df: pd.DataFrame, timeframe: str) -> Optional[Dict]:
     """
-    단일 마켓 DataFrame에서 SMI 매도 시그널 감지 (매수의 정반대 로직)
+    단일 마켓 DataFrame에서 SMI 매도 시그널 감지
 
-    마지막 2개 봉(i, i-1)을 체크한다.
-    SMA50 필터 없음 — 매도 시그널은 SMI 패턴만으로 판단.
+    로컬맥시멈 이후 2캔들 연속 하락 패턴을 감지한다 (매수의 정반대).
+    마지막 3개 봉을 체크하여 미완성 캔들 및 배치 타이밍 오차를 보정.
 
     Returns:
         시그널 딕셔너리 또는 None (시그널 없음)
@@ -204,8 +274,8 @@ def check_smi_sell_signal(df: pd.DataFrame, timeframe: str) -> Optional[Dict]:
 
     last_idx = len(merged_df) - 1
 
-    # 마지막 봉(i)과 직전 봉(i-1) 순서로 체크 — 가장 최근 시그널 우선
-    for i in [last_idx, last_idx - 1]:
+    # 마지막 3개 봉 체크
+    for i in [last_idx, last_idx - 1, last_idx - 2]:
         if i < SMI_LOCAL_MIN_WINDOW + 2:
             continue
 
@@ -260,11 +330,6 @@ def detect_sell_signals(
     """
     마켓 데이터에서 SMI 매도 시그널 감지 및 중복 체크
 
-    Args:
-        market_data: {market: {timeframe: DataFrame}} (SMI 계산 완료)
-        timeframe: 확인할 시간프레임
-        source_prefix: 중복 체크용 prefix (예: "UPBIT-", "BINANCE-")
-
     Returns:
         [(market, signal_dict), ...] - 시그널 발생 마켓 리스트
     """
@@ -290,7 +355,7 @@ def detect_sell_signals(
             console.print(f"[yellow]  {dedup_key} {timeframe}: 중복 매도 시그널 스킵[/yellow]")
             continue
 
-        console.print(f"[red]  🔴 매도 시그널 발생: {market} [{timeframe}][/red]")
+        console.print(f"[red]  SELL 시그널: {market} [{timeframe}][/red]")
         results.append((market, signal))
 
     return results
