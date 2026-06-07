@@ -1,16 +1,14 @@
 """SMI 시그널 감지 로직 (업비트)
 
 매수 시그널 조건 (Squeeze Momentum Index 기반):
-  1) 마지막 SMI 값이 음수 (하강 구간에서 회복 중)
-  2) 최근 로컬 미니멈(pivot)이 현재 바 기준 정확히 2칸 전(i-2)
-  3) m[i-2] < m[i-1] < m[i] 연속 상승 (로컬미니멈 이후 2캔들 회복 확인)
-  4) SMI_REQUIRE_NEGATIVE_PIVOT=True 이면 pivot 값이 음수여야 함
+  1) 최근 로컬 미니멈(pivot)이 현재 바 기준 정확히 2칸 전(i-2)
+  2) m[i-2] < m[i-1] < m[i] 연속 상승 (로컬미니멈 이후 2캔들 회복 확인)
+  3) SMI_REQUIRE_NEGATIVE_PIVOT=True 이면 pivot 값이 음수여야 함
 
 매도 시그널 조건 (매수의 정반대):
-  1) 마지막 SMI 값이 양수 (상승 구간에서 하락 시작)
-  2) 최근 로컬 맥시멈(pivot)이 현재 바 기준 정확히 2칸 전(i-2)
-  3) m[i-2] > m[i-1] > m[i] 연속 하락 (로컬맥시멈 이후 2캔들 하락 확인)
-  4) SMI_REQUIRE_POSITIVE_PIVOT=True 이면 pivot 값이 양수여야 함
+  1) 최근 로컬 맥시멈(pivot)이 현재 바 기준 정확히 2칸 전(i-2)
+  2) m[i-2] > m[i-1] > m[i] 연속 하락 (로컬맥시멈 이후 2캔들 하락 확인)
+  3) SMI_REQUIRE_POSITIVE_PIVOT=True 이면 pivot 값이 양수여야 함
 
 공통: 마지막 3개 봉(i, i-1, i-2) 체크 — 미완성 캔들 및 배치 타이밍 오차 보정
 
@@ -149,7 +147,7 @@ def check_smi_signal(df: pd.DataFrame, timeframe: str) -> Optional[Dict]:
             continue
 
         m_i2 = merged_df.iloc[i]["smi_momentum"]
-        if pd.isna(m_i2) or m_i2 >= 0:
+        if pd.isna(m_i2):
             continue
 
         # 피벗(로컬 미니멈)이 정확히 2칸 전이어야 함
@@ -280,8 +278,7 @@ def check_smi_sell_signal(df: pd.DataFrame, timeframe: str) -> Optional[Dict]:
             continue
 
         m_i2 = merged_df.iloc[i]["smi_momentum"]
-        # 마지막 SMI 값이 양수여야 함 (매수의 음수와 반대)
-        if pd.isna(m_i2) or m_i2 <= 0:
+        if pd.isna(m_i2):
             continue
 
         # 피벗(로컬 맥시멈)이 정확히 2칸 전이어야 함

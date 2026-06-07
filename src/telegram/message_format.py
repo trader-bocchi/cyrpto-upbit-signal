@@ -276,7 +276,7 @@ def format_combined_signals_message(
     current_time: Optional[str] = None,
 ) -> str:
     """
-    매수/매도 시그널을 하나의 메시지로 포맷팅
+    매수/매도 시그널을 하나의 메시지로 포맷팅 (단일 타임프레임)
 
     Args:
         buy_signals: [(market, signal_dict), ...] 매수 시그널
@@ -317,6 +317,68 @@ def format_combined_signals_message(
             msg += f"• <b>{escape_html(market)}</b>  {close:,.0f} KRW\n"
     else:
         msg += "• 시그널 없음\n"
+
+    return msg
+
+
+def _format_signal_list(signals: List[Tuple[str, Dict]], show_strength: bool = True) -> str:
+    """시그널 리스트를 텍스트로 포맷팅"""
+    if not signals:
+        return "  없음\n"
+    lines = ""
+    for market, signal in signals:
+        close = signal.get("close", 0)
+        tag = ""
+        if show_strength:
+            strength = signal.get("strength", "NORMAL")
+            score = signal.get("strength_score", 0.0)
+            tag = _strength_tag(strength, score)
+        lines += f"  • <b>{escape_html(market)}</b>  {close:,.0f} KRW{tag}\n"
+    return lines
+
+
+def format_unified_message(
+    buy_signals_4h: List[Tuple[str, Dict]],
+    sell_signals_4h: List[Tuple[str, Dict]],
+    buy_signals_1d: List[Tuple[str, Dict]],
+    sell_signals_1d: List[Tuple[str, Dict]],
+    current_time: Optional[str] = None,
+) -> str:
+    """
+    4H(주 시그널) + 1D(참고지표)를 하나의 메시지로 포맷팅
+
+    Args:
+        buy_signals_4h: 4H 매수 시그널
+        sell_signals_4h: 4H 매도 시그널
+        buy_signals_1d: 1D 매수 시그널 (참고)
+        sell_signals_1d: 1D 매도 시그널 (참고)
+        current_time: 현재 시점 문자열
+
+    Returns:
+        포맷팅된 HTML 메시지
+    """
+    msg = ""
+    if current_time:
+        msg += f"⏰ <b>시그널 시점:</b> {escape_html(current_time)}\n"
+    msg += "\n"
+
+    # ── 4H 주 시그널 ─────────────────────────────────────────────
+    msg += "━━━ <b>4H 시그널</b> ━━━\n\n"
+
+    msg += "✅ <b>BUY</b>\n"
+    msg += _format_signal_list(buy_signals_4h, show_strength=True)
+
+    msg += "\n🔴 <b>SELL</b>\n"
+    msg += _format_signal_list(sell_signals_4h, show_strength=False)
+
+    # ── 1D 참고지표 ──────────────────────────────────────────────
+    msg += "\n━━━ <b>1D 참고지표</b> ━━━\n\n"
+
+    msg += "✅ BUY\n"
+    msg += _format_signal_list(buy_signals_1d, show_strength=True)
+
+    msg += "\n🔴 SELL\n"
+    msg += _format_signal_list(sell_signals_1d, show_strength=False)
 
     return msg
 

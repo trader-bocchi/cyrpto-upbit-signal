@@ -45,7 +45,7 @@ MA_SMA50 = int(os.getenv("MA_SMA50", "50"))
 MA_SMA200 = int(os.getenv("MA_SMA200", "200"))
 
 # 시그널 필터
-SIGNAL_ENABLE_SMA50_FILTER = os.getenv("SIGNAL_ENABLE_SMA50_FILTER", "true").lower() == "true"
+SIGNAL_ENABLE_SMA50_FILTER = os.getenv("SIGNAL_ENABLE_SMA50_FILTER", "false").lower() == "true"
 
 # 백테스팅 파라미터
 BACKTEST_INITIAL_CASH = int(os.getenv("BACKTEST_INITIAL_CASH", "10000000"))
