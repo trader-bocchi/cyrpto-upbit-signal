@@ -6,11 +6,11 @@ from rich.console import Console
 from src.config import (
     SMI_LOCAL_MIN_WINDOW,
     SMI_REQUIRE_NEGATIVE_PIVOT,
-    SIGNAL_ENABLE_SMA50_FILTER,
 )
 from src.indicators.squeeze_momentum import calculate_smi
 from src.indicators.moving_averages import calculate_sma
 from src.indicators.extrema import find_pivot_min
+from src.signals.smi_rule import buy_signal_fields
 
 console = Console()
 
@@ -25,13 +25,13 @@ def detect_buy_signals(
     """
     매수 시그널 감지
     
-    규칙:
-    1. SMI momentum의 로컬 미니멈 중 최저값 pivot_min 선택 (최근 N개 내)
+    규칙 (실전 batch/signal_detector와 동일한 src.signals.smi_rule 사용):
+    1. SMI momentum의 로컬 미니멈(pivot)이 현재 봉 기준 정확히 2칸 전
     2. "2단계 회복": m[i+2] > m[i+1] > m[i]
     3. 시그널 시점 = i+2 bar
-    4. 추가 조건: m[i] < 0 (기본 on)
-    5. SMA50 필터: close > SMA50 (기본 on)
-    
+    4. 추가 조건: pivot 값 m[i] < 0 (SMI_REQUIRE_NEGATIVE_PIVOT)
+    추세/SMA 필터 없음 — 실전 발신과 동일하게 진입만 판정.
+
     Args:
         df: OHLCV + 지표 DataFrame
         market: 마켓 코드
@@ -84,57 +84,17 @@ def detect_buy_signals(
     if check_latest_only:
         if len(df) < SMI_LOCAL_MIN_WINDOW + 3:
             return []
-        
+
         # 마지막 행 인덱스
         i = len(df) - 1
-        
-        # 마지막 행의 SMI 값 (m[i+2])
-        m_i2 = df.iloc[i]["smi_momentum"]
-        
-        if pd.isna(m_i2):
+
+        fields = buy_signal_fields(df, i)
+        if fields is None:
             return []
-        
-        # find_pivot_min의 결과 사용 (이미 로컬 미니멈만 필터링되고, require_negative일 때 음수만 필터링됨)
-        pivot_info = df.iloc[i]
-        pivot_idx_loc = int(pivot_info["pivot_idx"])
-        
-        # 피벗이 없으면 시그널 없음
-        if pivot_idx_loc < 0:
-            return []
-        
-        # 피벗이 정확히 2칸 이전에 있어야 함 (최소값 다다음값 조건)
-        if pivot_idx_loc != i - 2:
-            return []
-        
-        # 피벗 시점의 SMI 값 (m[i])
-        m_i = df.iloc[pivot_idx_loc]["smi_momentum"]
-        if pd.isna(m_i):
-            return []
-        
-        # m[i+1] 확인 (피벗 다음 값)
-        m_i1 = df.iloc[pivot_idx_loc + 1]["smi_momentum"]
-        if pd.isna(m_i1):
-            return []
-        
-        # 2단계 회복 조건: m[i+2] > m[i+1] > m[i]
-        if not (m_i2 > m_i1 > m_i):
-            return []
-        
-        # SMI_REQUIRE_NEGATIVE_PIVOT 체크: 피벗이 반드시 음수여야 함
-        if SMI_REQUIRE_NEGATIVE_PIVOT and m_i >= 0:
-            return []
-        
-        # 추가 안전장치: m[i+2]가 양수여도 피벗이 음수여야 시그널 발생
-        # (피벗이 최소값이고, 그 다다음값에서 회복이 시작되어야 함)
-        
-        # 시그널 시점 = 마지막 행
+        m_i, m_i1, m_i2 = fields
+
         signal_row = df.iloc[i]
-        
-        # SMA50 필터
-        if SIGNAL_ENABLE_SMA50_FILTER:
-            if pd.isna(signal_row["sma_50"]) or signal_row["close"] <= signal_row["sma_50"]:
-                return []
-        
+
         # 시그널 생성
         signal = {
             "market": market,
@@ -151,52 +111,20 @@ def detect_buy_signals(
             "sma200_above": bool(signal_row["close"] > signal_row["sma_200"]) if not pd.isna(signal_row["sma_200"]) else None,
         }
         signals.append(signal)
-        
+
         return signals
     
     # 피벗 정보를 기반으로 시그널 탐색 (과거 모든 시그널)
+    # buy_signal_fields는 positional(iloc) 접근만 하므로 인덱스 형태와 무관하게 동작.
     for i in range(SMI_LOCAL_MIN_WINDOW + 2, len(df)):
-        pivot_idx_loc = int(df.iloc[i]["pivot_idx"])
-        
-        if pivot_idx_loc < 0:
+        fields = buy_signal_fields(df, i)
+        if fields is None:
             continue
-        
-        # 피벗이 현재 시점보다 최소 2칸 이전이어야 함
-        if pivot_idx_loc >= i - 1:
-            continue
-        
-        # 피벗 시점
-        pivot_idx = df.index[pivot_idx_loc]
-        pivot_value = df.loc[pivot_idx, "smi_momentum"]
-        
-        # 피벗 + 2 시점이 현재 시점과 일치하는지 확인
-        if pivot_idx_loc + 2 != i:
-            continue
-        
-        m_i = df.loc[pivot_idx, "smi_momentum"]
-        m_i1_idx = df.index[pivot_idx_loc + 1]
-        m_i2_idx = df.index[pivot_idx_loc + 2]  # 현재 i
-        
-        m_i1 = df.loc[m_i1_idx, "smi_momentum"]
-        m_i2 = df.loc[m_i2_idx, "smi_momentum"]
-        
-        # 2단계 회복 조건
-        if not (m_i2 > m_i1 > m_i):
-            continue
-        
-        # SMI_REQUIRE_NEGATIVE_PIVOT 체크: 피벗이 반드시 음수여야 함
-        if SMI_REQUIRE_NEGATIVE_PIVOT and m_i >= 0:
-            continue
-        
+        m_i, m_i1, m_i2 = fields
+
         # 시그널 시점 = i+2 bar (현재 i)
-        signal_idx = m_i2_idx
-        signal_row = df.loc[signal_idx]
-        
-        # SMA50 필터
-        if SIGNAL_ENABLE_SMA50_FILTER:
-            if pd.isna(signal_row["sma_50"]) or signal_row["close"] <= signal_row["sma_50"]:
-                continue
-        
+        signal_row = df.iloc[i]
+
         # 시그널 생성
         signal = {
             "market": market,
@@ -204,7 +132,7 @@ def detect_buy_signals(
             "signal_time_kst": str(signal_row["candle_time_kst"]),
             "side": "BUY",
             "close": float(signal_row["close"]),
-            "smi_pivot_min": float(pivot_value),
+            "smi_pivot_min": float(m_i),
             "smi_m_i": float(m_i),
             "smi_m_i1": float(m_i1),
             "smi_m_i2": float(m_i2),
@@ -212,8 +140,8 @@ def detect_buy_signals(
             "sma200": float(signal_row["sma_200"]) if not pd.isna(signal_row["sma_200"]) else None,
             "sma200_above": bool(signal_row["close"] > signal_row["sma_200"]) if not pd.isna(signal_row["sma_200"]) else None,
         }
-        
+
         signals.append(signal)
-    
+
     return signals
 

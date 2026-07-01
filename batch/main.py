@@ -3,8 +3,8 @@
 알림 발송 조건:
   - 매 4시간: 업비트 4h + 1d 통합 메시지 (1d는 참고지표)
 
-대상 종목: BTC, ETH, SOL, XRP
-  - 업비트: KRW-BTC, KRW-ETH, KRW-SOL, KRW-XRP
+대상 종목: BTC, ETH
+  - 업비트: KRW-BTC, KRW-ETH
 """
 import sys
 from pathlib import Path
@@ -28,7 +28,7 @@ from src.telegram.message_format import format_unified_message
 
 console = Console()
 
-UPBIT_TARGETS = ["KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-XRP"]
+UPBIT_TARGETS = ["KRW-BTC", "KRW-ETH"]
 KST = timezone(timedelta(hours=9))
 
 

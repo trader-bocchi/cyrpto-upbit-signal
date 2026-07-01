@@ -18,6 +18,17 @@ from src.upbit_client_fast import FastUpbitClient
 console = Console()
 
 
+def drop_incomplete_candle(df: pd.DataFrame) -> pd.DataFrame:
+    """가장 최근(진행 중) 캔들을 제거해 완성된 봉만 남긴다.
+
+    업비트 캔들 API는 현재 진행 중인 캔들을 가장 최근 행으로 반환한다.
+    이 행으로 시그널을 판정하면 캔들이 닫히며 SMI 값이 바뀌어 알림 후
+    시그널이 사라지는 리페인팅이 발생한다. 바이낸스 수집 경로와 동일하게
+    마지막 봉을 버려 완성된 봉만으로 판정한다.
+    """
+    if df.empty:
+        return df
+    return df.iloc[:-1].reset_index(drop=True)
 
 
 def fetch_recent_90days(
@@ -74,8 +85,10 @@ def fetch_recent_90days(
                 else:
                     # 정렬 (fetch-daily 스타일)
                     new_df = new_df.sort_values("candle_time_kst", ascending=True).reset_index(drop=True)
+                    # 마지막 미완성(진행 중) 캔들 제거 — 리페인팅 방지
+                    new_df = drop_incomplete_candle(new_df)
                     result[market][timeframe] = new_df
-                    console.print(f"  [{timeframe}] {len(new_df)}개 수집 완료")
+                    console.print(f"  [{timeframe}] {len(new_df)}개 수집 완료 (완성 봉만)")
                     
             except Exception as e:
                 console.print(f"  [{timeframe}] 오류: {e}")

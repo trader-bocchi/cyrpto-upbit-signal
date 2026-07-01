@@ -7,12 +7,15 @@ from src.config import (
     BACKTEST_STOP_LOSS_PCT,
     BACKTEST_TAKE_PROFIT_PCT,
     BACKTEST_TIME_STOP_ENABLED,
+    BACKTEST_TIME_STOP_MODE,
     BACKTEST_TIME_STOP_BARS_4H,
     BACKTEST_TIME_STOP_BARS_1D,
     BACKTEST_TIME_STOP_BARS_1H,
 )
 from src.storage.positions_store import get_all_positions, remove_position
 from src.indicators.moving_averages import calculate_sma
+from src.indicators.squeeze_momentum import calculate_smi
+from src.signals.exit_rules import adaptive_bounds, momentum_time_stop_hit
 
 console = Console()
 
@@ -48,9 +51,12 @@ def check_sell_signals(
     entry_time_kst = position["entry_time_kst"]
     entry_time_dt = pd.to_datetime(entry_time_kst)
     
-    # 이동평균 계산 (메시지용)
+    # 시간순 정렬 후 지표 계산 (동적 타임스탑은 SMI 모멘텀 필요)
+    df = df.sort_values("candle_time_kst").reset_index(drop=True)
     df = calculate_sma(df, periods=[200])
-    
+    df = calculate_smi(df)
+    smi_list = df["smi_momentum"].tolist()
+
     # entry_bar_index와 max_favorable_close_pct 추적 (타임스탑용)
     entry_bar_index = position.get("entry_bar_index")
     max_favorable_close_pct = position.get("max_favorable_close_pct", 0.0)
@@ -81,8 +87,13 @@ def check_sell_signals(
         pnl_pct = ((close - entry_price) / entry_price) * 100
         
         # [개선 규칙 2] 타임스탑 체크 (손절/익절보다 우선하지 않음)
-        if BACKTEST_TIME_STOP_ENABLED and entry_bar_index is not None:
-            # 타임프레임별 N bars 결정
+        if BACKTEST_TIME_STOP_ENABLED and BACKTEST_TIME_STOP_MODE == "adaptive":
+            # 동적A: SMI 2봉 연속 하락 시 청산 (최소~최대 봉 사이). timeframe_bar_index = 보유 봉 수
+            min_bars, max_bars = adaptive_bounds(timeframe)
+            if momentum_time_stop_hit(smi_list, idx, timeframe_bar_index, min_bars, max_bars):
+                sell_reason = "TIME_STOP"
+        elif BACKTEST_TIME_STOP_ENABLED and entry_bar_index is not None:
+            # fixed: 고정 N bars
             if timeframe == "4h":
                 time_stop_bars = BACKTEST_TIME_STOP_BARS_4H
             elif timeframe in ["1d", "24h", "d"]:
@@ -91,7 +102,7 @@ def check_sell_signals(
                 time_stop_bars = BACKTEST_TIME_STOP_BARS_1H
             else:
                 time_stop_bars = 12  # 기본값
-            
+
             # N bars 경과했고, TAKE가 발생하지 않았으면 타임스탑
             holding_bars = timeframe_bar_index - entry_bar_index
             if holding_bars >= time_stop_bars:

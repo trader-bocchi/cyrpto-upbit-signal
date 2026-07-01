@@ -26,6 +26,7 @@ from rich.console import Console
 
 from src.indicators.extrema import find_pivot_min, find_pivot_max
 from src.indicators.moving_averages import calculate_sma
+from src.signals.smi_rule import buy_signal_fields, sell_signal_fields
 from src.storage.sent_store import is_signal_sent, mark_signal_sent
 from src.config import (
     SMI_LOCAL_MIN_WINDOW,
@@ -141,30 +142,16 @@ def check_smi_signal(df: pd.DataFrame, timeframe: str) -> Optional[Dict]:
 
     last_idx = len(merged_df) - 1
 
-    # 마지막 3개 봉 체크 (미완성 캔들 + 배치 타이밍 오차 대응)
+    # 마지막 3개 봉 체크 (배치 타이밍 오차/누락 실행 대응)
+    # 완성된 봉만 들어오므로(수집 단계에서 미완성 캔들 제거) 리페인팅 없음.
     for i in [last_idx, last_idx - 1, last_idx - 2]:
         if i < SMI_LOCAL_MIN_WINDOW + 2:
             continue
 
-        m_i2 = merged_df.iloc[i]["smi_momentum"]
-        if pd.isna(m_i2):
+        fields = buy_signal_fields(merged_df, i)
+        if fields is None:
             continue
-
-        # 피벗(로컬 미니멈)이 정확히 2칸 전이어야 함
-        pivot_idx_loc = int(merged_df.iloc[i]["pivot_idx"])
-        if pivot_idx_loc < 0 or pivot_idx_loc != i - 2:
-            continue
-
-        m_i = merged_df.iloc[pivot_idx_loc]["smi_momentum"]
-        m_i1 = merged_df.iloc[pivot_idx_loc + 1]["smi_momentum"]
-
-        if pd.isna(m_i) or pd.isna(m_i1):
-            continue
-        # 연속 상승 조건: 피벗 → 피벗+1 → 현재 (모두 증가)
-        if not (m_i2 > m_i1 > m_i):
-            continue
-        if SMI_REQUIRE_NEGATIVE_PIVOT and m_i >= 0:
-            continue
+        m_i, m_i1, m_i2 = fields
 
         signal_row = merged_df.iloc[i]
 
@@ -272,30 +259,16 @@ def check_smi_sell_signal(df: pd.DataFrame, timeframe: str) -> Optional[Dict]:
 
     last_idx = len(merged_df) - 1
 
-    # 마지막 3개 봉 체크
+    # 마지막 3개 봉 체크 (배치 타이밍 오차/누락 실행 대응)
+    # 완성된 봉만 들어오므로(수집 단계에서 미완성 캔들 제거) 리페인팅 없음.
     for i in [last_idx, last_idx - 1, last_idx - 2]:
         if i < SMI_LOCAL_MIN_WINDOW + 2:
             continue
 
-        m_i2 = merged_df.iloc[i]["smi_momentum"]
-        if pd.isna(m_i2):
+        fields = sell_signal_fields(merged_df, i)
+        if fields is None:
             continue
-
-        # 피벗(로컬 맥시멈)이 정확히 2칸 전이어야 함
-        pivot_idx_loc = int(merged_df.iloc[i]["pivot_max_idx"])
-        if pivot_idx_loc < 0 or pivot_idx_loc != i - 2:
-            continue
-
-        m_i = merged_df.iloc[pivot_idx_loc]["smi_momentum"]
-        m_i1 = merged_df.iloc[pivot_idx_loc + 1]["smi_momentum"]
-
-        if pd.isna(m_i) or pd.isna(m_i1):
-            continue
-        # 연속 하락 조건: 피벗 → 피벗+1 → 현재 (모두 감소) — 매수의 연속 상승과 반대
-        if not (m_i2 < m_i1 < m_i):
-            continue
-        if SMI_REQUIRE_POSITIVE_PIVOT and m_i <= 0:
-            continue
+        m_i, m_i1, m_i2 = fields
 
         signal_row = merged_df.iloc[i]
 

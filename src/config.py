@@ -62,9 +62,18 @@ BACKTEST_REGIME_REDUCE_SIZE_FACTOR = float(os.getenv("BACKTEST_REGIME_REDUCE_SIZ
 
 # 타임스탑 (N bars 내 익절 미달 시 청산)
 BACKTEST_TIME_STOP_ENABLED = os.getenv("BACKTEST_TIME_STOP_ENABLED", "true").lower() == "true"
-BACKTEST_TIME_STOP_BARS_4H = int(os.getenv("BACKTEST_TIME_STOP_BARS_4H", "12"))
+BACKTEST_TIME_STOP_BARS_4H = int(os.getenv("BACKTEST_TIME_STOP_BARS_4H", "18"))  # 3일 (24h*3/4h) — fixed 모드용
 BACKTEST_TIME_STOP_BARS_1D = int(os.getenv("BACKTEST_TIME_STOP_BARS_1D", "7"))
 BACKTEST_TIME_STOP_BARS_1H = int(os.getenv("BACKTEST_TIME_STOP_BARS_1H", "24"))  # 1h는 24 bars (1일)
+
+# 동적(모멘텀 기반) 타임스탑 — 동적A: SMI가 2봉 연속 하락하면 청산, 하한/상한 봉수로 제한
+#   adaptive: 모멘텀 살아있으면 보유, 꺾이면 청산 (최소~최대 봉 사이)
+#   fixed   : 위 BACKTEST_TIME_STOP_BARS_* 고정 봉수 사용
+BACKTEST_TIME_STOP_MODE = os.getenv("BACKTEST_TIME_STOP_MODE", "adaptive")
+BACKTEST_TIME_STOP_MIN_BARS_4H = int(os.getenv("BACKTEST_TIME_STOP_MIN_BARS_4H", "6"))   # 1일
+BACKTEST_TIME_STOP_MAX_BARS_4H = int(os.getenv("BACKTEST_TIME_STOP_MAX_BARS_4H", "42"))  # 7일
+BACKTEST_TIME_STOP_MIN_BARS_1D = int(os.getenv("BACKTEST_TIME_STOP_MIN_BARS_1D", "1"))
+BACKTEST_TIME_STOP_MAX_BARS_1D = int(os.getenv("BACKTEST_TIME_STOP_MAX_BARS_1D", "7"))
 
 # 노출 상한 (리스크 캡)
 BACKTEST_MAX_POSITIONS = int(os.getenv("BACKTEST_MAX_POSITIONS", "10"))
