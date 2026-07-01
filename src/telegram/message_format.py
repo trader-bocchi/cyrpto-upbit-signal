@@ -1,6 +1,14 @@
 """텔레그램 메시지 포맷팅"""
 from typing import Dict, List, Optional, Tuple
 
+from src.config import BACKTEST_STOP_LOSS_PCT
+
+
+def _upbit_link(market: str) -> str:
+    """업비트 거래 페이지 URL"""
+    code = market.replace("KRW-", "").replace("krw-", "").lower()
+    return f"https://upbit.com/exchange?code=CRIX.UPBIT.KRW-{code}"
+
 
 def escape_html(text: str) -> str:
     """HTML 이스케이프"""
@@ -321,19 +329,38 @@ def format_combined_signals_message(
     return msg
 
 
-def _format_signal_list(signals: List[Tuple[str, Dict]], show_strength: bool = True) -> str:
-    """시그널 리스트를 텍스트로 포맷팅"""
+def _format_signal_list(signals: List[Tuple[str, Dict]], is_buy: bool = True) -> str:
+    """시그널 리스트를 상세와 함께 포맷팅.
+
+    각 시그널에 SMI 모멘텀 흐름(시그널이 잡힌 근거), 매수는 손절 참고가,
+    업비트 링크를 함께 표시한다.
+    """
     if not signals:
         return "  없음\n"
     lines = ""
     for market, signal in signals:
         close = signal.get("close", 0)
-        tag = ""
-        if show_strength:
-            strength = signal.get("strength", "NORMAL")
-            score = signal.get("strength_score", 0.0)
-            tag = _strength_tag(strength, score)
-        lines += f"  • <b>{escape_html(market)}</b>  {close:,.0f} KRW{tag}\n"
+        head = f"  • <b>{escape_html(market)}</b>  {close:,.0f} KRW"
+        if is_buy:
+            head += _strength_tag(signal.get("strength", "NORMAL"), signal.get("strength_score", 0.0))
+        lines += head + "\n"
+
+        # SMI 모멘텀 상태 (2봉 회복/하락 근거) — 원값은 코인마다 스케일이 달라
+        # 부호(0선 돌파 여부)로 표시한다.
+        m2 = signal.get("smi_m_i2")
+        detail = []
+        if is_buy:
+            state = "0선 상향돌파" if (m2 is not None and m2 > 0) else "아직 음수권"
+            detail.append(f"저점회복 2봉 · {state}")
+            if close:
+                stop_price = close * (1 - BACKTEST_STOP_LOSS_PCT)
+                detail.append(f"손절참고 {stop_price:,.0f}(-{BACKTEST_STOP_LOSS_PCT * 100:.0f}%)")
+        else:
+            state = "0선 하향돌파" if (m2 is not None and m2 < 0) else "아직 양수권"
+            detail.append(f"고점반전 2봉 · {state}")
+        if detail:
+            lines += "      " + " · ".join(detail) + "\n"
+        lines += f"      <a href='{_upbit_link(market)}'>업비트에서 보기 ↗</a>\n"
     return lines
 
 
@@ -366,19 +393,25 @@ def format_unified_message(
     msg += "━━━ <b>4H 시그널</b> ━━━\n\n"
 
     msg += "✅ <b>BUY</b>\n"
-    msg += _format_signal_list(buy_signals_4h, show_strength=True)
+    msg += _format_signal_list(buy_signals_4h, is_buy=True)
 
     msg += "\n🔴 <b>SELL</b>\n"
-    msg += _format_signal_list(sell_signals_4h, show_strength=False)
+    msg += _format_signal_list(sell_signals_4h, is_buy=False)
 
     # ── 1D 참고지표 ──────────────────────────────────────────────
     msg += "\n━━━ <b>1D 참고지표</b> ━━━\n\n"
 
     msg += "✅ BUY\n"
-    msg += _format_signal_list(buy_signals_1d, show_strength=True)
+    msg += _format_signal_list(buy_signals_1d, is_buy=True)
 
     msg += "\n🔴 SELL\n"
-    msg += _format_signal_list(sell_signals_1d, show_strength=False)
+    msg += _format_signal_list(sell_signals_1d, is_buy=False)
+
+    # ── 안내 ─────────────────────────────────────────────────────
+    has_any = any([buy_signals_4h, sell_signals_4h, buy_signals_1d, sell_signals_1d])
+    if has_any:
+        msg += "\n──────────\n"
+        msg += "※ 매수 진입가는 <b>다음 봉 시가</b> 기준. 매도 신호는 SMI 반전 시 발송.\n"
 
     return msg
 
