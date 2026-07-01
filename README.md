@@ -7,11 +7,14 @@ SMI(Squeeze Momentum Index) 기반 암호화폐 매수/매도 시그널 봇.
 
 ## 모니터링 대상 종목
 
-| 거래소 | 종목 |
-|--------|------|
-| 업비트 | KRW-BTC, KRW-ETH |
+| 거래소 | 종목 | 단위 |
+|--------|------|------|
+| 업비트 | KRW-BTC, KRW-ETH | KRW |
+| 바이낸스 | BTCUSDT, ETHUSDT | USDT |
 
-> 대상 종목은 `batch/main.py`의 `UPBIT_TARGETS`에서 관리합니다.
+> 대상 종목은 `batch/main.py`의 `UPBIT_TARGETS`, `BINANCE_TARGETS`에서 관리합니다.
+> 두 거래소 모두 동일한 SMI 로직으로 감지하며, 한 메시지에 통합 전송됩니다.
+> 캔들 경계가 동일(둘 다 UTC 정렬)해 같은 cron으로 동작합니다.
 
 ---
 
@@ -47,7 +50,7 @@ SMI 모멘텀이 바닥을 찍고 회복하는 패턴:
 
 | 시각 (KST) | 전송 내용 |
 |-----------|----------|
-| 01:05·05:05·09:05·13:05·17:05·21:05 | 업비트 **4h**(주 시그널) + **1d**(참고지표) 매수/매도 통합 메시지 |
+| 01:05·05:05·09:05·13:05·17:05·21:05 | 업비트(KRW) + 바이낸스(USDT) **4h**(주 시그널) + **1d**(참고지표) 매수/매도 통합 메시지 |
 
 - 매 실행마다 4H/1D 매수·매도를 하나의 메시지로 통합 전송(시그널 없으면 "없음"으로 표기).
 
@@ -83,7 +86,7 @@ crontab -e
 아래 줄을 추가(TZ는 시스템 로컬 시각 = KST 기준):
 
 ```cron
-5 1,5,9,13,17,21 * * * /Users/jongwon/proj/application/cyrpto-upbit-signal/scripts/run_local.sh
+5 1,5,9,13,17,21 * * * /Users/jongwon/proj/application/crypto-upbit-signal/scripts/run_local.sh
 ```
 
 > **macOS 주의:** cron이 파일/네트워크에 접근하려면 `시스템 설정 → 개인정보 보호 및 보안 → 전체 디스크 접근 권한`에서 `/usr/sbin/cron`을 허용해야 할 수 있습니다.

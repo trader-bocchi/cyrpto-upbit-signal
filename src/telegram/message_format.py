@@ -323,18 +323,21 @@ def format_combined_signals_message(
     return msg
 
 
-def _format_signal_list(signals: List[Tuple[str, Dict]], is_buy: bool = True) -> str:
-    """시그널 리스트를 상세와 함께 포맷팅.
+def _fmt_price(value: float, unit: str) -> str:
+    """단위별 가격 포맷 (KRW=정수, USDT 등=소수 2자리)."""
+    if unit == "KRW":
+        return f"{value:,.0f} KRW"
+    return f"{value:,.2f} {unit}"
 
-    각 시그널에 SMI 모멘텀 흐름(시그널이 잡힌 근거), 매수는 손절 참고가,
-    업비트 링크를 함께 표시한다.
-    """
+
+def _format_signal_list(signals: List[Tuple[str, Dict]], is_buy: bool = True, unit: str = "KRW") -> str:
+    """시그널 리스트를 상세(SMI 상태·손절참고)와 함께 포맷팅."""
     if not signals:
         return "  없음\n"
     lines = ""
     for market, signal in signals:
         close = signal.get("close", 0)
-        head = f"  • <b>{escape_html(market)}</b>  {close:,.0f} KRW"
+        head = f"  • <b>{escape_html(market)}</b>  {_fmt_price(close, unit)}"
         if is_buy:
             head += _strength_tag(signal.get("strength", "NORMAL"), signal.get("strength_score", 0.0))
         lines += head + "\n"
@@ -348,7 +351,7 @@ def _format_signal_list(signals: List[Tuple[str, Dict]], is_buy: bool = True) ->
             detail.append(f"저점회복 2봉 · {state}")
             if close:
                 stop_price = close * (1 - BACKTEST_STOP_LOSS_PCT)
-                detail.append(f"손절참고 {stop_price:,.0f}(-{BACKTEST_STOP_LOSS_PCT * 100:.0f}%)")
+                detail.append(f"손절참고 {_fmt_price(stop_price, unit)}(-{BACKTEST_STOP_LOSS_PCT * 100:.0f}%)")
         else:
             state = "0선 하향돌파" if (m2 is not None and m2 < 0) else "아직 양수권"
             detail.append(f"고점반전 2봉 · {state}")
@@ -357,52 +360,51 @@ def _format_signal_list(signals: List[Tuple[str, Dict]], is_buy: bool = True) ->
     return lines
 
 
+def _format_exchange_block(
+    label: str,
+    unit: str,
+    buy_4h: List[Tuple[str, Dict]],
+    sell_4h: List[Tuple[str, Dict]],
+    buy_1d: List[Tuple[str, Dict]],
+    sell_1d: List[Tuple[str, Dict]],
+) -> str:
+    """거래소 1곳의 4H(주)+1D(참고) 시그널 블록."""
+    msg = f"━━━ <b>{label}</b> ━━━\n\n"
+    msg += "▪ <b>4H</b>\n"
+    msg += "✅ BUY\n"
+    msg += _format_signal_list(buy_4h, is_buy=True, unit=unit)
+    msg += "🔴 SELL\n"
+    msg += _format_signal_list(sell_4h, is_buy=False, unit=unit)
+    msg += "\n▪ <b>1D</b> (참고)\n"
+    msg += "✅ BUY\n"
+    msg += _format_signal_list(buy_1d, is_buy=True, unit=unit)
+    msg += "🔴 SELL\n"
+    msg += _format_signal_list(sell_1d, is_buy=False, unit=unit)
+    return msg
+
+
 def format_unified_message(
-    buy_signals_4h: List[Tuple[str, Dict]],
-    sell_signals_4h: List[Tuple[str, Dict]],
-    buy_signals_1d: List[Tuple[str, Dict]],
-    sell_signals_1d: List[Tuple[str, Dict]],
+    upbit: Tuple[List, List, List, List],
+    binance: Optional[Tuple[List, List, List, List]] = None,
     current_time: Optional[str] = None,
 ) -> str:
-    """
-    4H(주 시그널) + 1D(참고지표)를 하나의 메시지로 포맷팅
+    """업비트(KRW)·바이낸스(USDT) 시그널을 하나의 메시지로 포맷팅.
 
     Args:
-        buy_signals_4h: 4H 매수 시그널
-        sell_signals_4h: 4H 매도 시그널
-        buy_signals_1d: 1D 매수 시그널 (참고)
-        sell_signals_1d: 1D 매도 시그널 (참고)
+        upbit: (buy_4h, sell_4h, buy_1d, sell_1d) — 업비트
+        binance: (buy_4h, sell_4h, buy_1d, sell_1d) — 바이낸스 (없으면 생략)
         current_time: 현재 시점 문자열
-
-    Returns:
-        포맷팅된 HTML 메시지
     """
     msg = ""
     if current_time:
-        msg += f"⏰ <b>시그널 시점:</b> {escape_html(current_time)}\n"
-    msg += "\n"
+        msg += f"⏰ <b>시그널 시점:</b> {escape_html(current_time)}\n\n"
 
-    # ── 4H 주 시그널 ─────────────────────────────────────────────
-    msg += "━━━ <b>4H 시그널</b> ━━━\n\n"
+    msg += _format_exchange_block("업비트 (KRW)", "KRW", *upbit)
+    if binance is not None:
+        msg += "\n" + _format_exchange_block("바이낸스 (USDT)", "USDT", *binance)
 
-    msg += "✅ <b>BUY</b>\n"
-    msg += _format_signal_list(buy_signals_4h, is_buy=True)
-
-    msg += "\n🔴 <b>SELL</b>\n"
-    msg += _format_signal_list(sell_signals_4h, is_buy=False)
-
-    # ── 1D 참고지표 ──────────────────────────────────────────────
-    msg += "\n━━━ <b>1D 참고지표</b> ━━━\n\n"
-
-    msg += "✅ BUY\n"
-    msg += _format_signal_list(buy_signals_1d, is_buy=True)
-
-    msg += "\n🔴 SELL\n"
-    msg += _format_signal_list(sell_signals_1d, is_buy=False)
-
-    # ── 안내 ─────────────────────────────────────────────────────
-    has_any = any([buy_signals_4h, sell_signals_4h, buy_signals_1d, sell_signals_1d])
-    if has_any:
+    all_groups = list(upbit) + (list(binance) if binance else [])
+    if any(all_groups):
         msg += "\n──────────\n"
         msg += "※ 매수 진입가는 <b>다음 봉 시가</b> 기준. 매도 신호는 SMI 반전 시 발송.\n"
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# 로컬 cron용 실행 스크립트 — 업비트 4h 캔들 마감 직후 시그널 발송.
+# 로컬 cron용 실행 스크립트 — 업비트/바이낸스 4h 캔들 마감 직후 시그널 발송.
 # crontab 예시(KST, 캔들 마감 5분 뒤):
-#   5 1,5,9,13,17,21 * * * /Users/jongwon/proj/application/cyrpto-upbit-signal/scripts/run_local.sh
+#   5 1,5,9,13,17,21 * * * /Users/jongwon/proj/application/crypto-upbit-signal/scripts/run_local.sh
 set -uo pipefail
 
-PROJECT="/Users/jongwon/proj/application/cyrpto-upbit-signal"
+# 프로젝트 경로는 이 스크립트 위치 기준으로 자동 계산 (폴더명이 바뀌어도 안 깨짐)
+PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON="/Users/jongwon/opt/anaconda3/bin/python3"
 
 cd "$PROJECT" || exit 1
