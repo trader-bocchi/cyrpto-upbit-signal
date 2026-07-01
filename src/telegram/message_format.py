@@ -4,12 +4,6 @@ from typing import Dict, List, Optional, Tuple
 from src.config import BACKTEST_STOP_LOSS_PCT
 
 
-def _upbit_link(market: str) -> str:
-    """업비트 거래 페이지 URL"""
-    code = market.replace("KRW-", "").replace("krw-", "").lower()
-    return f"https://upbit.com/exchange?code=CRIX.UPBIT.KRW-{code}"
-
-
 def escape_html(text: str) -> str:
     """HTML 이스케이프"""
     return (
@@ -360,7 +354,6 @@ def _format_signal_list(signals: List[Tuple[str, Dict]], is_buy: bool = True) ->
             detail.append(f"고점반전 2봉 · {state}")
         if detail:
             lines += "      " + " · ".join(detail) + "\n"
-        lines += f"      <a href='{_upbit_link(market)}'>업비트에서 보기 ↗</a>\n"
     return lines
 
 

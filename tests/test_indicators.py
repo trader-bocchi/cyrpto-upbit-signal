@@ -219,6 +219,32 @@ def _make_buy_signal_df(n_base: int = 110) -> pd.DataFrame:
     })
 
 
+def test_dispatch_log(tmp_path, monkeypatch):
+    """발송 감사 로그: 메시지와 근거(시그널) 데이터가 함께 기록되는지"""
+    import json
+    import src.storage.dispatch_log as dl
+
+    monkeypatch.setattr(dl, "LOG_DIR", tmp_path)
+    dl.log_dispatch(
+        "메시지본문",
+        {
+            "buy_4h": [("KRW-BTC", {"close": 100.0, "smi_m_i2": -1.0, "strength": "STRONG"})],
+            "sell_4h": [],
+            "buy_1d": [],
+            "sell_1d": [],
+        },
+        success=True,
+    )
+    files = list(tmp_path.glob("dispatch_*.jsonl"))
+    assert len(files) == 1
+    rec = json.loads(files[0].read_text(encoding="utf-8").strip())
+    assert rec["success"] is True
+    assert rec["message"] == "메시지본문"
+    assert rec["counts"]["buy_4h"] == 1
+    assert rec["signals"]["buy_4h"][0]["market"] == "KRW-BTC"
+    assert rec["signals"]["buy_4h"][0]["close"] == 100.0
+
+
 def test_momentum_time_stop_hit():
     """동적A 타임스탑: 최소보유 후 SMI 2봉 하락 시 발동, 상승 중엔 미발동, 상한 캡"""
     from src.signals.exit_rules import momentum_time_stop_hit

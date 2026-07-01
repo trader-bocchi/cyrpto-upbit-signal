@@ -9,6 +9,7 @@
 import sys
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
+import pandas as pd
 from rich.console import Console
 
 # 프로젝트 루트를 Python 경로에 추가
@@ -68,15 +69,25 @@ def send_unified_signals(
         current_time=current_time,
     )
 
-    if notifier.send_message(msg):
+    sent_ok = notifier.send_message(msg)
+
+    # 발송 감사 로그: 전송 메시지 + 근거(시그널) 데이터를 기록
+    from src.storage.dispatch_log import log_dispatch
+    log_dispatch(
+        msg,
+        {"buy_4h": buy_4h, "sell_4h": sell_4h, "buy_1d": buy_1d, "sell_1d": sell_1d},
+        sent_ok,
+    )
+
+    if sent_ok:
         mark_signals_sent(buy_4h, source_prefix="UPBIT-")
         mark_sell_signals_sent(sell_4h, source_prefix="UPBIT-")
         mark_signals_sent(buy_1d, source_prefix="UPBIT-")
         mark_sell_signals_sent(sell_1d, source_prefix="UPBIT-")
-        console.print("[green]OK 통합 메시지 전송 완료[/green]")
+        console.print("[green]OK 통합 메시지 전송 완료 (감사로그 기록)[/green]")
         return 1
     else:
-        console.print("[red]FAIL 메시지 전송 실패[/red]")
+        console.print("[red]FAIL 메시지 전송 실패 (감사로그 기록)[/red]")
         return 0
 
 
@@ -107,6 +118,16 @@ def main():
     # 3. 시그널 감지 및 전송 (4H + 1D 통합)
     console.print("\n[bold]3단계: 시그널 감지 및 전송[/bold]")
     notifier = TelegramNotifier()
+
+    # 데이터 건강성 체크: 사용 가능한 4h 데이터가 하나도 없으면
+    # 잘못된 '없음' 발송 대신 오류 알림 (조용한 실패 방지)
+    usable_4h = sum(1 for m in upbit_smi.values() if not m.get("4h", pd.DataFrame()).empty)
+    if usable_4h == 0:
+        console.print("[red]사용 가능한 4h 데이터 없음 — 데이터 수집 실패로 판단[/red]")
+        notifier.send_message("⚠️ <b>데이터 수집 실패</b> — 이번 회차 시그널 판정 불가 (다음 회차 재시도)")
+        console.print("\n[bold yellow]배치 종료 - 데이터 수집 실패[/bold yellow]")
+        return
+
     total_sent = send_unified_signals(notifier, upbit_smi, current_time)
 
     console.print(f"\n[bold green]배치 작업 완료 - {total_sent}개 메시지 전송[/bold green]")
